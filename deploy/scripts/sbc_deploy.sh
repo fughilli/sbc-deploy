@@ -59,14 +59,14 @@ parse_common_flags() {
       --attr)         IMAGE_ATTR="$2"; shift 2 ;;
       --hostname)     HOSTNAME_ATTR="$2"; shift 2 ;;
       --secrets-dir)  SECRETS_DIR_OVERRIDE="$2"; shift 2 ;;
-      --device)       DEVICE="$2"; shift 2 ;;
-      --no-write)     WRITE=0; shift ;;
-      --user)         DEPLOY_USER="$2"; shift 2 ;;
-      --)             # everything after `--` is forwarded verbatim to nix
-                      shift
-                      while [[ $# -gt 0 ]]; do EXTRA_ARGS+=("$1"); shift; done ;;
-      -*)             EXTRA_ARGS+=("$a"); shift ;;
-      *)              POSITIONAL+=("$a"); shift ;;
+      --device)          DEVICE="$2"; shift 2 ;;
+      --no-write|--no_write) WRITE=0; shift ;;
+      --user)            DEPLOY_USER="$2"; shift 2 ;;
+      --)                # everything after `--` is forwarded verbatim to nix
+                         shift
+                         while [[ $# -gt 0 ]]; do EXTRA_ARGS+=("$1"); shift; done ;;
+      -*)                die "unrecognized option '$a'. Recognized: --device <dev>, --no-write, --user <name>. To pass flags to nix/nixos-rebuild, put them after a literal '--' (e.g. '-- -- --dry-run')." ;;
+      *)                 POSITIONAL+=("$a"); shift ;;
     esac
   done
 }
