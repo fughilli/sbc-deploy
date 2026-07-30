@@ -159,9 +159,15 @@ builder**: same CPU arch, so it runs at full speed with full cache hits.
 
    ```
    extra-trusted-users = <your-username>
-   builders = ssh-ng://builder@linux-builder aarch64-linux /etc/nix/builder_ed25519 4 - - - c3NoLWVkMjU1MTkgQUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSUpCV2N4Yi9CbGFxdDFhdU90RStGOFFVV3JVb3RpQzVxQkorVXVFV2RWQ2Igcm9vdEBuaXhvcwo=
+   builders = ssh-ng://builder@linux-builder aarch64-linux /etc/nix/builder_ed25519 4 - kvm,benchmark,big-parallel - c3NoLWVkMjU1MTkgQUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSUpCV2N4Yi9CbGFxdDFhdU90RStGOFFVV3JVb3RpQzVxQkorVXVFV2RWQ2Igcm9vdEBuaXhvcwo=
    builders-use-substitutes = true
    ```
+
+   The 8 space-separated `builders` fields are: URI · system · ssh-key ·
+   maxjobs · speed · **supported-features** · mandatory-features · base64 host
+   key. The `big-parallel` feature is required — the RPi kernel derivation
+   demands it, and Nix's scheduler reads this line (not the VM) to decide what to
+   dispatch, so it must be declared here.
 
    And an SSH alias at `/etc/ssh/ssh_config.d/100-linux-builder.conf`:
 

@@ -85,6 +85,16 @@ tooling in `fughilli/splanc`. It will be vendored back into splanc once solid.
 
 ## Log
 
+### 2026-07-30 — builders line needs big-parallel feature
+
+First real dispatch to the Mac's linux-builder failed: the RPi kernel derivation
+requires the `big-parallel` system feature, but the documented `builders` line
+left the supported-features field as `-` (none), so the scheduler found no
+matching machine. Feature matching for remote dispatch is CLIENT-side (the
+`builders`/machines line), not the builder's own `system-features` — so it must
+be declared there. Fixed the README builders line to
+`… 4 - kvm,benchmark,big-parallel - <hostkey>`.
+
 ### 2026-07-30 — fix builder bootstrap deadlock
 
 The hand-rolled `nix/builder` flake hit a catch-22 on the user's Mac: building
