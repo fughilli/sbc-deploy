@@ -1,0 +1,16 @@
+# Bazel
+/bazel-*
+
+# Nix
+/result
+/result-*
+
+# Secrets / credentials — never commit
+/credentials/
+
+# Editor / OS
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
