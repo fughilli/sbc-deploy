@@ -1,10 +1,12 @@
 """sbc-deploy — a reusable Bazel + Nix module for deploying packaged
 applications to single-board computers (Raspberry Pi and friends).
 
-The runnable deploy targets are thin shell wrappers that shell out to the `nix`
-/ `nixos-rebuild` CLIs, so the only Bazel dependency is rules_shell. `nix` (with
-flakes) is a SYSTEM REQUIREMENT for actually building an image or deploying;
-`bazel build //...` itself does not need nix.
+The runnable deploy targets are shell wrappers that shell out to the `nix` /
+`nixos-rebuild` CLIs. `nix` (with flakes) is a SYSTEM REQUIREMENT for the module
+in any case, so we lean into it: the deploy scripts run under a hermetic,
+nixpkgs-vendored bash (rules_nixpkgs imports it as `@nixpkgs_bash`), not the
+host's system bash — which on macOS is the ancient 3.2. A small runfiles-aware
+launcher execs that bash on the real script.
 
 Consumers depend on this module and call the `sbc_deploy` macro from
 `@sbc_deploy//deploy:defs.bzl`; on the Nix side they add this repo as a flake
@@ -18,3 +20,40 @@ module(
 )
 
 bazel_dep(name = "rules_shell", version = "0.4.0")
+
+# ---------------------------------------------------------------------------
+# Hermetic bash from nixpkgs.
+#
+# sh_binary uses the script's shebang for its interpreter, so on macOS it would
+# otherwise run under /bin/bash 3.2. We instead vendor bash from a pinned
+# nixpkgs snapshot and exec the deploy script under it (see deploy/defs.bzl +
+# deploy/scripts/launch.sh). Repository fetches stay lazy — the bash package is
+# realized only when a deploy target is built/run.
+# ---------------------------------------------------------------------------
+bazel_dep(name = "rules_nixpkgs_core", version = "0.13.0")
+
+nix_repo = use_extension("@rules_nixpkgs_core//extensions:repository.bzl", "nix_repo")
+nix_repo.github(
+    name = "nixpkgs",
+    org = "NixOS",
+    repo = "nixpkgs",
+    tag = "25.05",
+    sha256 = "130b4257b3d53bfbfea6d61fb76d4751a3989a4a09a28615ff77516a82b3924d",
+)
+use_repo(nix_repo, "nixpkgs")
+
+nix_pkg = use_extension("@rules_nixpkgs_core//extensions:package.bzl", "nix_pkg")
+nix_pkg.attr(
+    name = "nixpkgs_bash",
+    attr = "bash",
+    build_file_content = """\
+package(default_visibility = ["//visibility:public"])
+
+filegroup(
+    name = "bash",
+    srcs = ["bin/bash"],
+)
+""",
+    repo = "@nixpkgs",
+)
+use_repo(nix_pkg, "nixpkgs_bash")

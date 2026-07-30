@@ -17,8 +17,11 @@ across projects, and will be vendored back into that repo once it's solid.
   NixOS modules. Board support comes from
   [`nvmd/nixos-raspberrypi`](https://github.com/nvmd/nixos-raspberrypi).
 - **Bazel half** (`deploy/`) — the `sbc_deploy` macro, which generates three
-  runnable targets that shell out to `nix` / `nixos-rebuild`. The only Bazel
-  dependency is `rules_shell`; `bazel build //...` needs no Nix.
+  runnable targets that shell out to `nix` / `nixos-rebuild`. The targets run
+  under a **hermetic, nixpkgs-vendored bash** (imported via `rules_nixpkgs`), so
+  the tool never depends on the host's system bash — which on macOS is the
+  ancient 3.2. (Building a target therefore realizes that bash from Nix; since
+  `nix` is required to do anything useful anyway, this costs nothing extra.)
 
 ## Using it in your project
 
@@ -126,9 +129,10 @@ Opt-in extras (add to `modules`): `sbc-deploy.nixosModules.spi` (hardware SPI +
 
 ## Requirements
 
-- `bazel`/`bazelisk` (pinned 7.7.1) — for the targets. No Nix needed to
-  `bazel build //...`.
-- `nix` with flakes — on the host that actually builds an image or deploys.
+- `bazel`/`bazelisk` (pinned 7.7.1) — for the targets.
+- `nix` with flakes — required in all cases: building any deploy target realizes
+  the hermetic bash from Nix, and the targets shell out to `nix` /
+  `nixos-rebuild` to build an image or deploy.
 - An `aarch64-linux` builder (native, or binfmt/qemu cross) for image builds,
   with enough RAM/disk to compile the RPi kernel when it isn't cache-served.
 
@@ -164,6 +168,7 @@ sbc-deploy/
   MODULE.bazel                 # Bazel module (rules_shell only)
   deploy/
     defs.bzl                   # sbc_deploy macro (public API)
+    scripts/launch.sh          # runfiles launcher: exec nix bash on the script
     scripts/sbc_deploy.sh      # generic image/deploy/keys entrypoint
   nix/
     flake.nix                  # lib.mkSbcSystem + nixosModules.*

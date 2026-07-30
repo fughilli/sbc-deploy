@@ -20,6 +20,10 @@
 # build or deploy. `keys` needs only ssh-keygen.
 set -euo pipefail
 
+# Runs under the nixpkgs-vendored bash via launch.sh (see deploy/defs.bzl).
+# Set SBC_DEBUG=1 to confirm which interpreter is in use.
+[[ -n "${SBC_DEBUG:-}" ]] && echo "sbc-deploy: bash=${BASH:-?} ${BASH_VERSION:-?}" >&2
+
 # --- config, overridable by flags or environment ---------------------------
 SUBCMD="${1:-}"
 [[ $# -gt 0 ]] && shift || true

@@ -85,6 +85,19 @@ tooling in `fughilli/splanc`. It will be vendored back into splanc once solid.
 
 ## Log
 
+### 2026-07-30 — hermetic nix bash
+
+macOS ships bash 3.2; `sh_binary` uses the shebang for its interpreter, so the
+targets were running under 3.2 and hit `set -u` empty-array + underscore-flag
+issues. Fixed properly: every target is now an sh_binary whose src is
+`deploy/scripts/launch.sh` (a runfiles-aware, 3.2-safe launcher) that execs a
+**nixpkgs-vendored bash** (`@nixpkgs_bash`, imported via `rules_nixpkgs_core` in
+MODULE.bazel) on `sbc_deploy.sh`. The macro passes the script + bash
+rlocationpaths as the two leading args. Verified in-container: targets run under
+`nixpkgs_bash/bin/bash 5.2.37` (`SBC_DEBUG=1` prints the interpreter). Building a
+target now realizes bash from Nix (nix already required). Kept the earlier 3.2
+guards in sbc_deploy.sh as defense for direct execution.
+
 ### 2026-07-30 — initial port
 
 Ported and generalized splanc `pi/provisioning` → this repo. Commits:
