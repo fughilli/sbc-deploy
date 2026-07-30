@@ -156,7 +156,8 @@ cmd_image() {
   export SBC_DEPLOY_PUBKEY_FILE="$PUB"
 
   echo "==> Building SD image: path:${flake_dir}#${IMAGE_ATTR}"
-  nix build "${EXTRA_ARGS[@]}" \
+  # ${arr[@]+…} guards the empty-array-under-`set -u` case on bash 3.2 (macOS).
+  nix build ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
     --impure \
     --print-out-paths \
     "path:${flake_dir}#${IMAGE_ATTR}" \
@@ -212,7 +213,7 @@ cmd_deploy() {
     --target-host "$target" \
     --use-remote-sudo \
     --impure \
-    "${EXTRA_ARGS[@]}"
+    ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
   echo "==> Switch complete on $DEPLOY_HOST."
 }
 
