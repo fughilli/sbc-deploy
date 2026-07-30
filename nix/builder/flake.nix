@@ -39,7 +39,7 @@
       # a build still runs tight.
       sizeModule = {
         virtualisation.darwin-builder.memorySize = 8192; # MiB (default 3072)
-        virtualisation.darwin-builder.diskSize = 40960; # MiB (default 20480)
+        virtualisation.darwin-builder.diskSize = 61440; # MiB (default 20480) — RPi kernel build scratch is large
         virtualisation.cores = 6;
       };
 

@@ -193,9 +193,9 @@ builder**: same CPU arch, so it runs at full speed with full cache hits.
      ```
 
      (Disk stays 20 GB — usually enough. If a build hits "No space left on
-     device", use the flake below for a 40 GB disk.)
+     device", use the flake below for a 60 GB disk.)
 
-   - **Bigger, persistent size — this repo's flake** (8 GB RAM / 40 GB disk / 6
+   - **Bigger, persistent size — this repo's flake** (8 GB RAM / 60 GB disk / 6
      cores). It `.override`s the *packaged* builder, so the guest closure is
      identical to stock and comes straight from the cache — no bootstrap:
 

@@ -110,13 +110,20 @@ to `nixpkgs.legacyPackages.<sys>.darwin.linux-builder.override { modules = [size
 `him26ibjn3sqhfaj5y2bkw854s1vp2vf`, present on cache.nixos.org), so no bootstrap.
 README now leads with the zero-rebuild `QEMU_OPTS="-m 8192 -smp 6" nix run
 nixpkgs#darwin.linux-builder` (RAM fix; 20 GB disk) and offers the flake for a
-40 GB disk, plus a "don't hand-roll the VM" warning. Default stock sizes: 3 GB
+60 GB disk, plus a "don't hand-roll the VM" warning. Default stock sizes: 3 GB
 RAM / 20 GB disk.
+
+### 2026-07-30 — kernel build filled the 20 GB stock disk
+
+The QEMU_OPTS stock builder (8 GB RAM, 20 GB disk) got deep into the RPi kernel
+compile then failed "No space left on device" (auto-GC couldn't free enough).
+RAM was fine — purely disk. Bumped the flake's diskSize 40960 → 61440 MiB
+(60 GB); user switches from the stock VM to the flake VM to get the bigger disk.
 
 ### 2026-07-30 — sized-up linux-builder VM flake
 
 Added `nix/builder/flake.nix`: the nixpkgs `darwin.linux-builder` VM sized to
-8 GB / 40 GB / 6 cores (the stock ~3 GB VM OOMs on the RPi kernel), exposed as
+8 GB / 60 GB / 6 cores (the stock ~3 GB VM OOMs on the RPi kernel), exposed as
 `apps.<darwin>.linux-builder` → `nix run …?dir=nix/builder#linux-builder`. Keeps
 upstream default keys/host-key/port 31022, so the README's one-time nix.conf
 `builders` line + ssh alias apply unchanged. Follows the nixpkgs manual
