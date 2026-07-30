@@ -133,8 +133,66 @@ Opt-in extras (add to `modules`): `sbc-deploy.nixosModules.spi` (hardware SPI +
 - `nix` with flakes — required in all cases: building any deploy target realizes
   the hermetic bash from Nix, and the targets shell out to `nix` /
   `nixos-rebuild` to build an image or deploy.
-- An `aarch64-linux` builder (native, or binfmt/qemu cross) for image builds,
-  with enough RAM/disk to compile the RPi kernel when it isn't cache-served.
+- An `aarch64-linux` builder for image builds, with enough RAM/disk to compile
+  the RPi kernel when it isn't cache-served. On a Linux host this is just the
+  host itself; on macOS see below.
+
+## Building on Apple Silicon (aarch64-darwin)
+
+An SD image is a tree of `aarch64-linux` derivations, and Linux binaries can't
+execute on macOS — so a Mac cannot build them locally. You'll see:
+
+```
+error: a 'aarch64-linux' with features {} is required to build '…', but I am a 'aarch64-darwin'
+```
+
+Cross-compiling the whole closure (Darwin → Linux) isn't practical — the binary
+caches only have *native* `aarch64-linux`, so a cross build would rebuild the
+world from source. Instead, dispatch the build to a **native `aarch64-linux`
+builder**: same CPU arch, so it runs at full speed with full cache hits.
+
+**Option A — local Linux builder VM (recommended; `nix-darwin`).** A background
+NixOS VM that registers as an `aarch64-linux` builder:
+
+```nix
+# in your nix-darwin configuration
+nix.linux-builder = {
+  enable = true;
+  maxJobs = 4;
+  config.virtualisation = {
+    cores = 6;
+    darwin-builder.memorySize = 8 * 1024;   # MiB; ≥8 GB for the kernel compile
+  };
+};
+nix.settings.trusted-users = [ "@admin" ];
+```
+
+Rebuild your Darwin system, then the targets work with **no extra flags**:
+
+```sh
+bazel run //examples/hello-sbc:hello.image_sd -- --no-write
+```
+
+**Option B — a remote `aarch64-linux` box** (a spare Linux server, another Pi,
+etc.). Point a target at it with `--builder`, which takes a Nix `--builders`
+spec — `ssh-ng://<user>@<host> <system> <ssh-key> <maxjobs> <speed> <features>`:
+
+```sh
+bazel run //examples/hello-sbc:hello.image_sd -- --no-write \
+    --builder 'ssh-ng://you@linux-box aarch64-linux ~/.ssh/id_ed25519 8 1 big-parallel'
+```
+
+`--builder` forces all builds remote (`--max-jobs 0`) while both ends still
+substitute from the binary cache. The host must be reachable over SSH, in your
+`known_hosts`, and a Nix trusted user. Set `SBC_NIX_BUILDERS` to that spec to
+make it the default without the flag; pass `--builder` more than once for
+several builders.
+
+**Kernel note:** the pinned Raspberry Pi kernel isn't in the binary cache for
+this rev, so the builder compiles it once — give it ≥8 GB RAM and ~25 GB free.
+
+For `deploy_live`, the same `--builder` applies; alternatively add
+`-- --build-host <pi>` to build directly on the target board.
 
 ## Verification status
 

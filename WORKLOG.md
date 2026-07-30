@@ -85,6 +85,20 @@ tooling in `fughilli/splanc`. It will be vendored back into splanc once solid.
 
 ## Log
 
+### 2026-07-30 — Apple-Silicon build support
+
+On aarch64-darwin the image can't build locally (Linux binaries don't run on
+Darwin; error "a 'aarch64-linux' … is required to build … but I am a
+'aarch64-darwin'"). Cross-compiling the whole closure is impractical (no cache
+reuse). Added a `--builder <spec>` flag + `SBC_NIX_BUILDERS` env to sbc_deploy.sh
+that dispatches builds to a native aarch64-linux builder via nix
+`--max-jobs 0 --builders-use-substitutes --builders <spec>` (applied to both
+`nix build` and `nixos-rebuild`). README "Building on Apple Silicon" documents
+the two paths: nix-darwin `nix.linux-builder` (recommended; works with no flags)
+and an ad-hoc remote builder via `--builder`. Verified arg assembly with a stub
+nix (space-containing `--builders` value stays one arg; empty case clean); a
+real remote build wasn't exercised (no second builder in-container).
+
 ### 2026-07-30 — hermetic nix bash
 
 macOS ships bash 3.2; `sh_binary` uses the shebang for its interpreter, so the

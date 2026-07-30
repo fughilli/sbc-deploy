@@ -38,9 +38,26 @@ DEVICE=""
 WRITE=1
 DEPLOY_USER="root"
 DEPLOY_HOST=""
+# Remote/VM aarch64-linux build machine(s). On aarch64-darwin (Apple Silicon)
+# the host can't build the Linux image locally, so builds must be dispatched to
+# a native aarch64-linux builder. Space/semicolon-separated nix `--builders`
+# spec; see the README "Building on Apple Silicon".
+NIX_BUILDERS="${SBC_NIX_BUILDERS:-}"
 EXTRA_ARGS=()
 
 die() { echo "ERROR: $*" >&2; exit 1; }
+
+# Populate the global BUILDER_ARGS array with nix flags that dispatch all builds
+# to the configured aarch64-linux builder(s). --max-jobs 0 forbids local builds
+# (the darwin host can't produce aarch64-linux outputs), while substitution +
+# --builders-use-substitutes let both machines still pull from the binary cache.
+BUILDER_ARGS=()
+set_builder_args() {
+  BUILDER_ARGS=()
+  [[ -n "$NIX_BUILDERS" ]] || return 0
+  echo "==> Dispatching builds to aarch64-linux builder(s): $NIX_BUILDERS" >&2
+  BUILDER_ARGS=(--max-jobs 0 --builders-use-substitutes --builders "$NIX_BUILDERS")
+}
 
 # --- resolve paths against the real source tree ----------------------------
 repo_root() {
@@ -66,10 +83,12 @@ parse_common_flags() {
       --device)          DEVICE="$2"; shift 2 ;;
       --no-write|--no_write) WRITE=0; shift ;;
       --user)            DEPLOY_USER="$2"; shift 2 ;;
+      --builder)         # append; nix separates multiple builders with ';'
+                         NIX_BUILDERS="${NIX_BUILDERS:+$NIX_BUILDERS ; }$2"; shift 2 ;;
       --)                # everything after `--` is forwarded verbatim to nix
                          shift
                          while [[ $# -gt 0 ]]; do EXTRA_ARGS+=("$1"); shift; done ;;
-      -*)                die "unrecognized option '$a'. Recognized: --device <dev>, --no-write, --user <name>. To pass flags to nix/nixos-rebuild, put them after a literal '--' (e.g. '-- -- --dry-run')." ;;
+      -*)                die "unrecognized option '$a'. Recognized: --device <dev>, --no-write, --user <name>, --builder <spec>. To pass flags to nix/nixos-rebuild, put them after a literal '--' (e.g. '-- -- --dry-run')." ;;
       *)                 POSITIONAL+=("$a"); shift ;;
     esac
   done
@@ -159,9 +178,13 @@ cmd_image() {
   # lets eval reach it (the key lives outside the flake root on purpose).
   export SBC_DEPLOY_PUBKEY_FILE="$PUB"
 
+  set_builder_args
+
   echo "==> Building SD image: path:${flake_dir}#${IMAGE_ATTR}"
   # ${arr[@]+…} guards the empty-array-under-`set -u` case on bash 3.2 (macOS).
-  nix build ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
+  nix build \
+    ${BUILDER_ARGS[@]+"${BUILDER_ARGS[@]}"} \
+    ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
     --impure \
     --print-out-paths \
     "path:${flake_dir}#${IMAGE_ATTR}" \
@@ -211,12 +234,17 @@ cmd_deploy() {
   export NIX_SSHOPTS="-i $PRIV -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
   export SBC_DEPLOY_PUBKEY_FILE="$PUB"
 
+  set_builder_args
+
   echo "==> Deploying path:${flake_dir}#${attr} to $target (in-place switch)"
+  # On aarch64-darwin, either pass --builder (dispatch the build to a linux
+  # builder) or add '-- --build-host <target>' to build on the Pi itself.
   nixos-rebuild switch \
     --flake "path:${flake_dir}#${attr}" \
     --target-host "$target" \
     --use-remote-sudo \
     --impure \
+    ${BUILDER_ARGS[@]+"${BUILDER_ARGS[@]}"} \
     ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
   echo "==> Switch complete on $DEPLOY_HOST."
 }
@@ -232,9 +260,13 @@ case "$SUBCMD" in
   ""|-h|--help)
     cat >&2 <<EOF
 sbc-deploy: usage via the Bazel targets created by the sbc_deploy macro:
-  bazel run //path:NAME.image_sd    -- [--device /dev/sdX] [--no-write]
-  bazel run //path:NAME.deploy_live -- <host-or-ip> [--user root]
+  bazel run //path:NAME.image_sd    -- [--device /dev/sdX] [--no-write] [--builder <spec>]
+  bazel run //path:NAME.deploy_live -- <host-or-ip> [--user root] [--builder <spec>]
   bazel run //path:NAME.keys        -- {init|ensure|rotate|path|pub}
+
+On aarch64-darwin (Apple Silicon) an image can't be built locally; pass
+--builder (a nix --builders spec) or set SBC_NIX_BUILDERS to dispatch the build
+to an aarch64-linux builder. See the README "Building on Apple Silicon".
 EOF
     exit 2 ;;
   *) die "unknown subcommand '$SUBCMD' (expected image|deploy|keys)" ;;
