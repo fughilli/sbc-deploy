@@ -151,27 +151,50 @@ caches only have *native* `aarch64-linux`, so a cross build would rebuild the
 world from source. Instead, dispatch the build to a **native `aarch64-linux`
 builder**: same CPU arch, so it runs at full speed with full cache hits.
 
-**Option A — local Linux builder VM (recommended; `nix-darwin`).** A background
-NixOS VM that registers as an `aarch64-linux` builder:
+**Option A — local Linux builder VM.** A NixOS VM that registers as an
+`aarch64-linux` builder. The stock `nixpkgs#darwin.linux-builder` VM has only
+~3 GB RAM and OOMs on the RPi kernel compile, so this repo ships a sized-up one
+(`nix/builder/`, 8 GB / 40 GB / 6 cores) that keeps the upstream default keys +
+port so the config below is standard.
 
-```nix
-# in your nix-darwin configuration
-nix.linux-builder = {
-  enable = true;
-  maxJobs = 4;
-  config.virtualisation = {
-    cores = 6;
-    darwin-builder.memorySize = 8 * 1024;   # MiB; ≥8 GB for the kernel compile
-  };
-};
-nix.settings.trusted-users = [ "@admin" ];
-```
+1. One-time Nix config. On plain Nix, add to `/etc/nix/nix.conf`; on Determinate
+   Nix, add to `/etc/nix/nix.custom.conf`:
 
-Rebuild your Darwin system, then the targets work with **no extra flags**:
+   ```
+   extra-trusted-users = <your-username>
+   builders = ssh-ng://builder@linux-builder aarch64-linux /etc/nix/builder_ed25519 4 - - - c3NoLWVkMjU1MTkgQUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSUpCV2N4Yi9CbGFxdDFhdU90RStGOFFVV3JVb3RpQzVxQkorVXVFV2RWQ2Igcm9vdEBuaXhvcwo=
+   builders-use-substitutes = true
+   ```
 
-```sh
-bazel run //examples/hello-sbc:hello.image_sd -- --no-write
-```
+   And an SSH alias at `/etc/ssh/ssh_config.d/100-linux-builder.conf`:
+
+   ```
+   Host linux-builder
+     Hostname localhost
+     HostKeyAlias linux-builder
+     Port 31022
+   ```
+
+   Then restart the daemon: `sudo launchctl kickstart -k system/org.nixos.nix-daemon`
+   (if that label is absent, find it with `sudo launchctl list | grep -i nix`).
+
+2. Start the builder in a spare terminal and leave it running (it prompts for
+   `sudo` once to install the SSH key):
+
+   ```sh
+   nix run github:fughilli/sbc-deploy?dir=nix/builder#linux-builder
+   ```
+
+3. Build — the targets now work with **no `--builder` flag** (Nix routes the
+   `aarch64-linux` builds to the VM):
+
+   ```sh
+   bazel run //examples/hello-sbc:hello.image_sd -- --no-write
+   ```
+
+If you *do* run `nix-darwin`, prefer its `nix.linux-builder.enable = true` module
+(same VM, managed as a background service) with
+`config.virtualisation.darwin-builder.memorySize = 8 * 1024;` for the kernel.
 
 **Option B — a remote `aarch64-linux` box** (a spare Linux server, another Pi,
 etc.). Point a target at it with `--builder`, which takes a Nix `--builders`
@@ -231,6 +254,7 @@ sbc-deploy/
   nix/
     flake.nix                  # lib.mkSbcSystem + nixosModules.*
     flake.lock                 # pinned inputs
+    builder/flake.nix          # sized-up linux-builder VM for macOS hosts
     modules/
       sbc-base.nix             # networking / mDNS / firewall
       ssh-deploy.nix           # sshd + deploy-key trust

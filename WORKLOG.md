@@ -85,6 +85,21 @@ tooling in `fughilli/splanc`. It will be vendored back into splanc once solid.
 
 ## Log
 
+### 2026-07-30 — sized-up linux-builder VM flake
+
+Added `nix/builder/flake.nix`: the nixpkgs `darwin.linux-builder` VM sized to
+8 GB / 40 GB / 6 cores (the stock ~3 GB VM OOMs on the RPi kernel), exposed as
+`apps.<darwin>.linux-builder` → `nix run …?dir=nix/builder#linux-builder`. Keeps
+upstream default keys/host-key/port 31022, so the README's one-time nix.conf
+`builders` line + ssh alias apply unchanged. Follows the nixpkgs manual
+"Reconfiguring" pattern (nixosSystem + profiles/nix-builder-vm.nix, host arch's
+linux twin → native aarch64-linux on Apple Silicon). Validated by eval on the
+linux container: `nix eval --system aarch64-darwin …#packages.aarch64-darwin.
+linux-builder.drvPath` → real create-builder.drv (all option paths valid); app
+`program` → …/bin/create-builder. Actually running/building it needs macOS
+(Virtualization.framework) — unverified there. README "Building on Apple Silicon"
+updated with the standalone (no-nix-darwin) flow.
+
 ### 2026-07-30 — Apple-Silicon build support
 
 On aarch64-darwin the image can't build locally (Linux binaries don't run on
