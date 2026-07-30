@@ -85,6 +85,24 @@ tooling in `fughilli/splanc`. It will be vendored back into splanc once solid.
 
 ## Log
 
+### 2026-07-30 — fix builder bootstrap deadlock
+
+The hand-rolled `nix/builder` flake hit a catch-22 on the user's Mac: building
+the custom VM required an aarch64-linux builder (the VM itself). Root cause found
+by inspection on the container: a fresh `lib.nixosSystem` stamps the nixpkgs rev
+into the system derivation (`…-nixos-system-…ac62194`), which is NOT on
+cache.nixos.org, so it must be built — but the packaged `darwin.linux-builder`
+sets `nixos.revision = null` giving `…-nixos-system-25.05pre-git`, which IS
+cached. Also confirmed memory/disk/cores are runtime-only (`-m`/`-smp`/`$QEMU_OPTS`,
+disk created at boot) and don't change the guest closure. Fix: rewrote the flake
+to `nixpkgs.legacyPackages.<sys>.darwin.linux-builder.override { modules = [size]; }`
+— guest stays byte-identical to stock (verified: both eval to
+`him26ibjn3sqhfaj5y2bkw854s1vp2vf`, present on cache.nixos.org), so no bootstrap.
+README now leads with the zero-rebuild `QEMU_OPTS="-m 8192 -smp 6" nix run
+nixpkgs#darwin.linux-builder` (RAM fix; 20 GB disk) and offers the flake for a
+40 GB disk, plus a "don't hand-roll the VM" warning. Default stock sizes: 3 GB
+RAM / 20 GB disk.
+
 ### 2026-07-30 — sized-up linux-builder VM flake
 
 Added `nix/builder/flake.nix`: the nixpkgs `darwin.linux-builder` VM sized to

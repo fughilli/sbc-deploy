@@ -152,10 +152,7 @@ world from source. Instead, dispatch the build to a **native `aarch64-linux`
 builder**: same CPU arch, so it runs at full speed with full cache hits.
 
 **Option A — local Linux builder VM.** A NixOS VM that registers as an
-`aarch64-linux` builder. The stock `nixpkgs#darwin.linux-builder` VM has only
-~3 GB RAM and OOMs on the RPi kernel compile, so this repo ships a sized-up one
-(`nix/builder/`, 8 GB / 40 GB / 6 cores) that keeps the upstream default keys +
-port so the config below is standard.
+`aarch64-linux` builder. Do the one-time config once, then start a VM.
 
 1. One-time Nix config. On plain Nix, add to `/etc/nix/nix.conf`; on Determinate
    Nix, add to `/etc/nix/nix.custom.conf`:
@@ -178,12 +175,29 @@ port so the config below is standard.
    Then restart the daemon: `sudo launchctl kickstart -k system/org.nixos.nix-daemon`
    (if that label is absent, find it with `sudo launchctl list | grep -i nix`).
 
-2. Start the builder in a spare terminal and leave it running (it prompts for
-   `sudo` once to install the SSH key):
+2. Start a builder in a spare terminal and leave it running (it prompts for
+   `sudo` once to install the SSH key). The stock VM ships with only **3 GB RAM /
+   20 GB disk** and OOMs on the RPi kernel — so bump it. Two ways:
 
-   ```sh
-   nix run github:fughilli/sbc-deploy?dir=nix/builder#linux-builder
-   ```
+   - **Quickest — resize the stock VM at runtime.** RAM/cores are passed via
+     `$QEMU_OPTS`, so no rebuild and it stays 100% cache-served:
+
+     ```sh
+     QEMU_OPTS="-m 8192 -smp 6" nix run nixpkgs#darwin.linux-builder
+     ```
+
+     (Disk stays 20 GB — usually enough. If a build hits "No space left on
+     device", use the flake below for a 40 GB disk.)
+
+   - **Bigger, persistent size — this repo's flake** (8 GB RAM / 40 GB disk / 6
+     cores). It `.override`s the *packaged* builder, so the guest closure is
+     identical to stock and comes straight from the cache — no bootstrap:
+
+     ```sh
+     nix run 'github:fughilli/sbc-deploy?dir=nix/builder#linux-builder'
+     ```
+
+     (Quote the URL — `?`/`#` are shell metacharacters, especially in fish/zsh.)
 
 3. Build — the targets now work with **no `--builder` flag** (Nix routes the
    `aarch64-linux` builds to the VM):
@@ -192,9 +206,12 @@ port so the config below is standard.
    bazel run //examples/hello-sbc:hello.image_sd -- --no-write
    ```
 
-If you *do* run `nix-darwin`, prefer its `nix.linux-builder.enable = true` module
-(same VM, managed as a background service) with
-`config.virtualisation.darwin-builder.memorySize = 8 * 1024;` for the kernel.
+> **Don't hand-roll the VM with a fresh `nixosSystem`.** That stamps the nixpkgs
+> rev into a *different*, uncached system derivation, which then needs an
+> `aarch64-linux` builder to realize — the very builder you're creating (a
+> bootstrap deadlock). Overriding the packaged `darwin.linux-builder` (what the
+> flake does) keeps the cached guest. If you *do* run `nix-darwin`, its
+> `nix.linux-builder.enable = true` module is the cleanest managed equivalent.
 
 **Option B — a remote `aarch64-linux` box** (a spare Linux server, another Pi,
 etc.). Point a target at it with `--builder`, which takes a Nix `--builders`
