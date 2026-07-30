@@ -1,0 +1,10 @@
+# The generic deploy entrypoint, consumed by the sbc_deploy macro (defs.bzl).
+package(default_visibility = ["//visibility:public"])
+
+exports_files([
+    "defs.bzl",
+])
+
+exports_files(
+    glob(["scripts/*.sh"]),
+)

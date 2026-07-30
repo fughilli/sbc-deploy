@@ -1,12 +1,20 @@
 # Bazel
 /bazel-*
+/.bazel-disk-cache/
+/.bazel-repo-cache/
+/.bazelisk/
 
-# Nix
+# Nix build results
 /result
 /result-*
+/tmp-sbc-image
 
-# Secrets / credentials — never commit
-/credentials/
+# Secrets / deploy keys — never commit private key material.
+# Each example/consumer keeps its own secrets/ dir at any depth; only the
+# README is tracked. Leading **/ is required so the rule matches nested dirs
+# (a mid-pattern slash like `secrets/*` would anchor to the repo root only).
+**/secrets/*
+!**/secrets/README.md
 
 # Editor / OS
 .DS_Store

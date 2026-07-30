@@ -1,0 +1,20 @@
+"""sbc-deploy — a reusable Bazel + Nix module for deploying packaged
+applications to single-board computers (Raspberry Pi and friends).
+
+The runnable deploy targets are thin shell wrappers that shell out to the `nix`
+/ `nixos-rebuild` CLIs, so the only Bazel dependency is rules_shell. `nix` (with
+flakes) is a SYSTEM REQUIREMENT for actually building an image or deploying;
+`bazel build //...` itself does not need nix.
+
+Consumers depend on this module and call the `sbc_deploy` macro from
+`@sbc_deploy//deploy:defs.bzl`; on the Nix side they add this repo as a flake
+input and call `sbc-deploy.lib.mkSbcSystem`.
+"""
+
+module(
+    name = "sbc_deploy",
+    version = "0.0.0",
+    compatibility_level = 1,
+)
+
+bazel_dep(name = "rules_shell", version = "0.4.0")

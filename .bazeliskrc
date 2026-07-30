@@ -1,0 +1,3 @@
+# Cache downloaded Bazel binaries inside the project tree (gitignored) so they
+# survive container rebuilds / fresh homes. Path is relative to workspace root.
+BAZELISK_HOME=.bazelisk

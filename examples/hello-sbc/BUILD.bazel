@@ -1,0 +1,13 @@
+# hello-sbc example — demonstrates the sbc_deploy macro.
+#
+#   bazel run //examples/hello-sbc:hello.keys        -- init
+#   bazel run //examples/hello-sbc:hello.image_sd    -- --no-write
+#   bazel run //examples/hello-sbc:hello.deploy_live -- hello.local
+
+load("@sbc_deploy//deploy:defs.bzl", "sbc_deploy")
+
+sbc_deploy(
+    name = "hello",
+    flake = "examples/hello-sbc/nix",
+    hostname = "hello",
+)
