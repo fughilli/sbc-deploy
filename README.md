@@ -123,6 +123,27 @@ bazel run //path:myboard.deploy_live   -- myboard.local
 Anything after a `--` is forwarded verbatim to `nix build` / `nixos-rebuild`
 (e.g. `-- -- --dry-run`, `--builder …`, or `--override-input` for local dev).
 
+### Flashing the SD card
+
+Pass `--device` to write the built image to a card. The target handles both
+Linux and macOS, decompresses the `.img.zst` on the fly (bundled `zstd`), and
+asks you to re-type the device path to confirm before overwriting.
+
+```sh
+# Linux — find the card (e.g. /dev/sdX), then:
+lsblk
+bazel run //path:myboard.image_sd -- --device /dev/sdX
+
+# macOS — find the disk id, then pass /dev/diskN (it uses the raw node + diskutil
+# to unmount/eject; press Ctrl-T during the write for progress):
+diskutil list
+bazel run //path:myboard.image_sd -- --device /dev/disk4
+```
+
+The write runs under `sudo` (you'll be prompted). Double-check the device — this
+overwrites the whole disk. On macOS the first build/flash pulls `zstd` from the
+cache (tiny).
+
 ## SSH deploy key
 
 The deploy flow owns one ed25519 key pair (see `keys` above):

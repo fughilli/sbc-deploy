@@ -86,6 +86,21 @@ tooling in `fughilli/splanc`. It will be vendored back into splanc once solid.
 
 ## Log
 
+### 2026-07-31 — cross-platform SD flashing (image_sd --device)
+
+The old flash path was Linux-only (`lsblk`, `dd status=progress conv=fsync`) and
+would break on the user's Mac. Rewrote `flash_image` to branch on `uname`:
+macOS → `diskutil unmountDisk` + `dd of=/dev/rdiskN bs=4m` (BSD dd, no
+status=progress; Ctrl-T for progress) + `diskutil eject`; Linux → `dd of=DEV
+bs=4M status=progress conv=fsync`. Bundled `zstd` from nixpkgs (`@nixpkgs_zstd`,
+like bash/yj) for turnkey `.img.zst` decompression — resolved by the launcher as
+a 4th lead arg and exported as `SBC_ZSTD` (falls back to PATH zstd). Launcher now
+reads 4 lead args (script, bash, wifi-or-`-`, zstd-or-`-`); sbc_linux_builder
+passes `- -`. Verified: `bazel build //...` clean; bundled zstd resolves
+(SBC_DEBUG); stub test confirms the macOS (rdisk/bs=4m/diskutil) and Linux
+(bs=4M/status=progress/conv=fsync) dd command assembly. Real flashing to hardware
+still untested (no card in the container).
+
 ### 2026-07-31 — declarative WiFi via wifi_config_file (YAML)
 
 `sbc_application(wifi_config_file = "wifi.yaml")` — a single YAML list of

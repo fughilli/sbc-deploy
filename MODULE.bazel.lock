@@ -89,7 +89,7 @@
     "@@rules_nixpkgs_core~//extensions:package.bzl%nix_pkg": {
       "general": {
         "bzlTransitiveDigest": "2alEQC7q9PgrArc8ZeI662VmDHLGfuswqnzBJvVDnmg=",
-        "usagesDigest": "MRBfOAqFlGUSS7QePbAm8KvUpyqtWw9f33uGN+b2eeo=",
+        "usagesDigest": "Yvm/F70tLt19XwdyGbJJ43OvDL7WA2sQCsjWD0+1RFo=",
         "recordedFileInputs": {},
         "recordedDirentsInputs": {},
         "envVariables": {},
@@ -125,12 +125,29 @@
               "quiet": false,
               "fail_not_supported": true
             }
+          },
+          "nixpkgs_zstd": {
+            "bzlFile": "@@rules_nixpkgs_core~//:nixpkgs.bzl",
+            "ruleClassName": "_nixpkgs_package",
+            "attributes": {
+              "unmangled_name": "nixpkgs_zstd",
+              "attribute_path": "zstd",
+              "nix_file_deps": {},
+              "nix_file_content": "",
+              "repository": "@@rules_nixpkgs_core~~nix_repo~nixpkgs//:nixpkgs",
+              "repositories": {},
+              "build_file_content": "package(default_visibility = [\"//visibility:public\"])\n\nfilegroup(\n    name = \"zstd\",\n    srcs = [\"bin/zstd\"],\n)\n",
+              "nixopts": [],
+              "quiet": false,
+              "fail_not_supported": true
+            }
           }
         },
         "moduleExtensionMetadata": {
           "explicitRootModuleDirectDeps": [
             "nixpkgs_bash",
-            "nixpkgs_yj"
+            "nixpkgs_yj",
+            "nixpkgs_zstd"
           ],
           "explicitRootModuleDirectDevDeps": [],
           "useAllRepos": "NO",

@@ -76,3 +76,20 @@ filegroup(
     repo = "@nixpkgs",
 )
 use_repo(nix_pkg, "nixpkgs_yj")
+
+# zstd — decompress the .img.zst SD image on the fly when flashing, so the
+# `image_sd --device …` target is turnkey (no system zstd needed).
+nix_pkg.attr(
+    name = "nixpkgs_zstd",
+    attr = "zstd",
+    build_file_content = """\
+package(default_visibility = ["//visibility:public"])
+
+filegroup(
+    name = "zstd",
+    srcs = ["bin/zstd"],
+)
+""",
+    repo = "@nixpkgs",
+)
+use_repo(nix_pkg, "nixpkgs_zstd")

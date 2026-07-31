@@ -26,6 +26,7 @@ source "${RUNFILES_DIR:-/dev/null}/$f" 2>/dev/null || \
 script_rlocationpath="$1"; shift
 bash_rlocationpath="$1"; shift
 wifi_json_rlocationpath="$1"; shift   # "-" sentinel when no wifi config file
+zstd_rlocationpath="$1"; shift        # "-" sentinel when not needed (e.g. builder)
 
 script="$(rlocation "$script_rlocationpath")" || {
   echo >&2 "ERROR: could not resolve deploy script ($script_rlocationpath) in runfiles"; exit 1; }
@@ -38,6 +39,13 @@ if [[ "$wifi_json_rlocationpath" != "-" ]]; then
   SBC_WIFI_CONFIG_JSON="$(rlocation "$wifi_json_rlocationpath")" || {
     echo >&2 "ERROR: could not resolve wifi config json ($wifi_json_rlocationpath) in runfiles"; exit 1; }
   export SBC_WIFI_CONFIG_JSON
+fi
+
+# Bundled zstd for turnkey .img.zst decompression when flashing (image_sd).
+if [[ "$zstd_rlocationpath" != "-" ]]; then
+  SBC_ZSTD="$(rlocation "$zstd_rlocationpath")" || {
+    echo >&2 "ERROR: could not resolve zstd ($zstd_rlocationpath) in runfiles"; exit 1; }
+  export SBC_ZSTD
 fi
 
 exec "$bash_bin" "$script" "$@"

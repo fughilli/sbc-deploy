@@ -25,6 +25,7 @@ set -euo pipefail
 [[ -n "${SBC_DEBUG:-}" ]] && {
   echo "sbc-deploy: bash=${BASH:-?} ${BASH_VERSION:-?}" >&2
   echo "sbc-deploy: wifi_config_json=${SBC_WIFI_CONFIG_JSON:-<none>}" >&2
+  echo "sbc-deploy: zstd=${SBC_ZSTD:-<none>}" >&2
 }
 
 # --- config, overridable by flags or environment ---------------------------
@@ -219,22 +220,50 @@ cmd_image() {
   echo "==> Built image: $img"
 
   if [[ $WRITE -eq 0 || -z "$DEVICE" ]]; then
-    echo "Not writing to a device (pass --device /dev/sdX to flash)."
-    echo "To flash manually:"
-    echo "  zstdcat '$img' | sudo dd of=/dev/sdX bs=4M status=progress conv=fsync"
+    echo "Not writing to a device. Re-run with --device to flash, e.g.:"
+    echo "  Linux:  bazel run … -- --device /dev/sdX"
+    echo "  macOS:  diskutil list   # find the card, then --device /dev/diskN"
     return 0
   fi
 
-  echo "!!  About to OVERWRITE $DEVICE with the $PROJECT image."
-  lsblk "$DEVICE" || true
-  read -r -p "Type the device path again to confirm ($DEVICE): " confirm
-  [[ "$confirm" == "$DEVICE" ]] || die "Mismatch; aborting."
+  flash_image "$img" "$DEVICE"
+}
+
+# Write an image (raw or .zst) to a block device, cross-platform (Linux + macOS).
+flash_image() {
+  local img="$1" device="$2"
+  local os; os="$(uname -s)"
+
+  # zstd: prefer the bundled one (SBC_ZSTD, from the launcher), else PATH.
+  local zstd="${SBC_ZSTD:-zstd}"
   if [[ "$img" == *.zst ]]; then
-    zstdcat "$img" | sudo dd of="$DEVICE" bs=4M status=progress conv=fsync
-  else
-    sudo dd if="$img" of="$DEVICE" bs=4M status=progress conv=fsync
+    command -v "$zstd" >/dev/null 2>&1 \
+      || die "zstd not found to decompress the image. Install it (nix profile install nixpkgs#zstd, or brew/apt install zstd)."
   fi
-  sync
+
+  echo "!!  About to OVERWRITE $device with the $PROJECT image."
+  if [[ "$os" == "Darwin" ]]; then diskutil list "$device" || true; else lsblk "$device" || true; fi
+  read -r -p "Type the device path again to confirm ($device): " confirm
+  [[ "$confirm" == "$device" ]] || die "Mismatch; aborting."
+
+  # Source: decompress on the fly, or stream the raw image.
+  local -a src
+  if [[ "$img" == *.zst ]]; then src=("$zstd" -dc "$img"); else src=(cat "$img"); fi
+
+  if [[ "$os" == "Darwin" ]]; then
+    # Unmount (not eject) so the raw device stays open; write to the raw node
+    # (/dev/rdiskN) with a lowercase-suffix block size (BSD dd). No
+    # status=progress/conv=fsync on BSD dd — press Ctrl-T for progress.
+    sudo diskutil unmountDisk "$device" || true
+    local rdev="/dev/r${device#/dev/}"
+    echo "==> Writing to $rdev (raw; press Ctrl-T for progress)…"
+    "${src[@]}" | sudo dd of="$rdev" bs=4m
+    sync
+    sudo diskutil eject "$device" || true
+  else
+    "${src[@]}" | sudo dd of="$device" bs=4M status=progress conv=fsync
+    sync
+  fi
   echo "==> Done. Insert the card into the board and boot."
 }
 

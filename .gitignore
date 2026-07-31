@@ -22,3 +22,6 @@
 *~
 .idea/
 .vscode/
+
+# Don't commit WiFi credentials
+examples/hello-sbc/wifi.yaml
