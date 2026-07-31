@@ -16,8 +16,9 @@ across projects, and will be vendored back into that repo once it's solid.
   system + SD image from a board + hostname + your modules) and the reusable
   NixOS modules. Board support comes from
   [`nvmd/nixos-raspberrypi`](https://github.com/nvmd/nixos-raspberrypi).
-- **Bazel half** (`deploy/`) — the `sbc_deploy` macro, which generates three
-  runnable targets that shell out to `nix` / `nixos-rebuild`. The targets run
+- **Bazel half** (`deploy/`) — the `sbc_application` macro, which generates the
+  runnable targets; they drive `nix` (build, `nix copy`, and activate over SSH).
+  The targets run
   under a **hermetic, nixpkgs-vendored bash** (imported via `rules_nixpkgs`), so
   the tool never depends on the host's system bash — which on macOS is the
   ancient 3.2. (Building a target therefore realizes that bash from Nix; since
@@ -90,8 +91,8 @@ sbc_application(
 ```
 
 Once `framework` is set, the deploy targets are fully self-contained: they inject
-that framework into every `nix build` / `nixos-rebuild`, so bumping the framework
-is a single Bazel pin — you never run `nix flake update` for it.
+that framework into every build (image and deploy), so bumping the framework is
+a single Bazel pin — you never run `nix flake update` for it.
 
 ## Deployment modes
 
@@ -110,7 +111,7 @@ bazel run //path:myboard.image_sd      -- --device /dev/sdX   # build + flash
 bazel run //path:myboard.image_sd_base -- --device /dev/sdX
 
 # Mode 3 — push the application (and any required system deps) to a running
-# board in place (nixos-rebuild switch --target-host to the full system).
+# board in place: build the closure, nix-copy it over, switch-to-configuration.
 bazel run //path:myboard.deploy_live   -- myboard.local
 
 # Convenience — ssh in with the deploy key (defaults to <hostname>.local):
@@ -125,7 +126,7 @@ bazel run //path:myboard.ssh -- -- systemctl status sbc-web   # run a remote com
 | 2 | `image_sd_base` | SD image of the base system only (networking) |
 | 3 | `deploy_live` | App + its system deps onto a running board, no reflash |
 
-Anything after a `--` is forwarded verbatim to `nix build` / `nixos-rebuild`
+Anything after a `--` is forwarded verbatim to the underlying `nix build`
 (e.g. `-- -- --dry-run`, `--builder …`, or `--override-input` for local dev).
 
 ### Flashing the SD card
@@ -249,8 +250,8 @@ bazel run //path:myboard.image_sd -- --no-write
 
 - `bazel`/`bazelisk` (pinned 7.7.1) — for the targets.
 - `nix` with flakes — required in all cases: building any deploy target realizes
-  the hermetic bash from Nix, and the targets shell out to `nix` /
-  `nixos-rebuild` to build an image or deploy.
+  the hermetic bash from Nix, and the targets drive `nix` to build an image or
+  to build/copy/activate a system for deploy. `ssh` for deploy/ssh targets.
 - An `aarch64-linux` builder for image builds, with enough RAM/disk to compile
   the RPi kernel when it isn't cache-served. On a Linux host this is just the
   host itself; on macOS see below.

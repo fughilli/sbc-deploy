@@ -16,8 +16,8 @@
 # is what lets one generic script serve any consuming repo: the macro only has
 # to tell it the project name and the workspace-relative flake dir.
 #
-# Requires `nix` (with flakes) / `nixos-rebuild` on the host actually running a
-# build or deploy. `keys` needs only ssh-keygen.
+# Requires `nix` (with flakes) on the host actually running a build or deploy.
+# `keys` needs only ssh-keygen; `ssh`/`deploy` need `ssh`.
 set -euo pipefail
 
 # Runs under the nixpkgs-vendored bash via launch.sh (see deploy/defs.bzl).
@@ -27,7 +27,6 @@ set -euo pipefail
   echo "sbc-deploy: wifi_config_json=${SBC_WIFI_CONFIG_JSON:-<none>}" >&2
   echo "sbc-deploy: zstd=${SBC_ZSTD:-<none>}" >&2
   echo "sbc-deploy: pv=${SBC_PV:-<none>}" >&2
-  echo "sbc-deploy: nixos_rebuild=${SBC_NIXOS_REBUILD:-<none>}" >&2
 }
 
 # --- config, overridable by flags or environment ---------------------------
@@ -80,9 +79,9 @@ set_builder_args() {
   BUILDER_ARGS=()
   [[ -n "$NIX_BUILDERS" ]] || return 0
   echo "==> Dispatching builds to aarch64-linux builder(s): $NIX_BUILDERS" >&2
-  # `--option builders-use-substitutes true` (not the bare flag) so this is
-  # accepted by both `nix build` and `nixos-rebuild` (which rejects unknown
-  # flags).
+  # --max-jobs 0 forbids local builds (a darwin host can't produce
+  # aarch64-linux); builders-use-substitutes lets the remote builder pull from
+  # the binary cache itself.
   BUILDER_ARGS=(--max-jobs 0 --option builders-use-substitutes true --builders "$NIX_BUILDERS")
 }
 
@@ -116,7 +115,7 @@ parse_common_flags() {
       --)                # everything after `--` is forwarded verbatim to nix
                          shift
                          while [[ $# -gt 0 ]]; do EXTRA_ARGS+=("$1"); shift; done ;;
-      -*)                die "unrecognized option '$a'. Recognized: --device <dev>, --no-write, --user <name>, --builder <spec>. To pass flags to nix/nixos-rebuild, put them after a literal '--' (e.g. '-- -- --dry-run')." ;;
+      -*)                die "unrecognized option '$a'. Recognized: --device <dev>, --no-write, --user <name>, --builder <spec>. To pass flags to nix, put them after a literal '--' (e.g. '-- -- --dry-run')." ;;
       *)                 POSITIONAL+=("$a"); shift ;;
     esac
   done
@@ -293,41 +292,55 @@ flash_image() {
 }
 
 # ---------------------------------------------------------------------------
-# deploy — in-place upgrade of a running board via nixos-rebuild --target-host.
+# deploy — in-place upgrade of a running board. Rather than run nixos-rebuild
+# (a Linux tool that's awkward on macOS), do the three steps it does with
+# darwin-native tooling: build the system closure with `nix build` (dispatched
+# to the linux builder like image builds), `nix copy` it to the board, then
+# activate it over SSH. Works uniformly from Linux and macOS.
 # ---------------------------------------------------------------------------
 cmd_deploy() {
   [[ -n "$FLAKE_SUBDIR" ]] || die "--flake-subdir not set (the sbc_deploy macro sets this)."
   DEPLOY_HOST="${POSITIONAL[0]:-}"
-  [[ -n "$DEPLOY_HOST" ]] || { echo "usage: deploy_live <host-or-ip> [--user root] [nix args]" >&2; exit 2; }
-  # Prefer the bundled nixos-rebuild (from the launcher), else PATH.
-  local nixos_rebuild="${SBC_NIXOS_REBUILD:-nixos-rebuild}"
-  command -v "$nixos_rebuild" >/dev/null 2>&1 || die "'nixos-rebuild' not found."
+  [[ -n "$DEPLOY_HOST" ]] || { echo "usage: deploy_live <host-or-ip> [--user root]" >&2; exit 2; }
+  command -v nix >/dev/null 2>&1 || die "'nix' not found."
+  command -v ssh >/dev/null 2>&1 || die "'ssh' not found."
 
   local flake_dir attr target
   flake_dir="$(repo_root)/$FLAKE_SUBDIR"
   attr="${HOSTNAME_ATTR:-$PROJECT}"
   key_paths
-  [[ -f "$PRIV" ]] || die "deploy private key not found at $PRIV. Generate it (and re-image to trust it) with the .keys target: keys init"
+  [[ -f "$PRIV" ]] || die "deploy private key not found at $PRIV. Generate it (and image/deploy the board to trust it) with the .keys target: keys init"
   chmod 600 "$PRIV" 2>/dev/null || true
 
   target="${DEPLOY_USER}@${DEPLOY_HOST}"
-  export NIX_SSHOPTS="-i $PRIV -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
-  export SBC_DEPLOY_PUBKEY_FILE="$PUB"
+  local ssh_opts="-i $PRIV -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+  export NIX_SSHOPTS="$ssh_opts"          # used by `nix copy` over ssh-ng
+  export SBC_DEPLOY_PUBKEY_FILE="$PUB"     # baked into the config at eval (--impure)
 
   set_builder_args
   set_framework_override
 
-  echo "==> Deploying path:${flake_dir}#${attr} to $target (in-place switch)"
-  # On aarch64-darwin, either pass --builder (dispatch the build to a linux
-  # builder) or add '-- --build-host <target>' to build on the Pi itself.
-  "$nixos_rebuild" switch \
-    --flake "path:${flake_dir}#${attr}" \
-    --target-host "$target" \
-    --use-remote-sudo \
-    --impure \
+  # 1. Build the system closure (aarch64-linux; goes to the linux builder).
+  echo "==> Building system closure: path:${flake_dir}#nixosConfigurations.${attr}"
+  local toplevel
+  toplevel="$(nix build \
     ${FRAMEWORK_ARGS[@]+"${FRAMEWORK_ARGS[@]}"} \
     ${BUILDER_ARGS[@]+"${BUILDER_ARGS[@]}"} \
-    ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
+    ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
+    --impure --no-link --print-out-paths \
+    "path:${flake_dir}#nixosConfigurations.${attr}.config.system.build.toplevel" | tail -n1)"
+  [[ -n "$toplevel" ]] || die "failed to build the system closure."
+  echo "==> Built $toplevel"
+
+  # 2. Copy the closure to the board (root is a trusted user there).
+  echo "==> Copying closure to $target"
+  nix copy --no-check-sigs --to "ssh-ng://${target}" "$toplevel"
+
+  # 3. Register it as the current system generation and activate it.
+  echo "==> Activating on $target (switch-to-configuration switch)"
+  # shellcheck disable=SC2086
+  ssh $ssh_opts "$target" \
+    "nix-env -p /nix/var/nix/profiles/system --set '$toplevel' && '$toplevel/bin/switch-to-configuration' switch"
   echo "==> Switch complete on $DEPLOY_HOST."
 }
 

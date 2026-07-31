@@ -28,7 +28,6 @@ bash_rlocationpath="$1"; shift
 wifi_json_rlocationpath="$1"; shift   # "-" sentinel when no wifi config file
 zstd_rlocationpath="$1"; shift        # "-" sentinel when not needed (e.g. builder)
 pv_rlocationpath="$1"; shift          # "-" sentinel when not needed
-nixos_rebuild_rlocationpath="$1"; shift  # "-" sentinel unless it's the deploy target
 
 script="$(rlocation "$script_rlocationpath")" || {
   echo >&2 "ERROR: could not resolve deploy script ($script_rlocationpath) in runfiles"; exit 1; }
@@ -55,13 +54,6 @@ if [[ "$pv_rlocationpath" != "-" ]]; then
   SBC_PV="$(rlocation "$pv_rlocationpath")" || {
     echo >&2 "ERROR: could not resolve pv ($pv_rlocationpath) in runfiles"; exit 1; }
   export SBC_PV
-fi
-
-# Bundled nixos-rebuild for the deploy target (not on a stock macOS PATH).
-if [[ "$nixos_rebuild_rlocationpath" != "-" ]]; then
-  SBC_NIXOS_REBUILD="$(rlocation "$nixos_rebuild_rlocationpath")" || {
-    echo >&2 "ERROR: could not resolve nixos-rebuild ($nixos_rebuild_rlocationpath) in runfiles"; exit 1; }
-  export SBC_NIXOS_REBUILD
 fi
 
 exec "$bash_bin" "$script" "$@"

@@ -86,6 +86,24 @@ tooling in `fughilli/splanc`. It will be vendored back into splanc once solid.
 
 ## Log
 
+### 2026-07-31 — deploy_live without nixos-rebuild (nix build + copy + switch)
+
+The bundled nixos-rebuild ran but died: `Exec format error` on
+`coreutils/bin/mktemp` — it was the aarch64-LINUX nixos-rebuild (baking linux
+coreutils `alyxj0…`), not darwin (`7jfjz…`). Confirmed the darwin nixos-rebuild
+IS correct (bakes darwin coreutils), but rules_nixpkgs handed us the linux
+variant, and nixos-rebuild-on-macOS is fragile regardless. Rewrote cmd_deploy to
+do what nixos-rebuild does, with darwin-native tools:
+  1. `nix build …#nixosConfigurations.<h>.config.system.build.toplevel` (goes to
+     the linux builder like images),
+  2. `nix copy --no-check-sigs --to ssh-ng://root@host <toplevel>`,
+  3. `ssh … "nix-env -p /nix/var/nix/profiles/system --set <tl> && <tl>/bin/
+     switch-to-configuration switch"`.
+Uses NIX_SSHOPTS + the deploy key; --override-input/builder args still apply to
+step 1. Removed the whole nixos-rebuild bundling (MODULE import, 6th launcher
+lead arg, SBC_NIXOS_REBUILD). Verified: bazel build //... clean; stub test shows
+the 3 steps assemble. Real remote switch still unverified (no Pi here).
+
 ### 2026-07-31 — bundle nixos-rebuild so deploy_live works on macOS
 
 `deploy_live` failed with `'nixos-rebuild' not found` — it's a NixOS tool absent

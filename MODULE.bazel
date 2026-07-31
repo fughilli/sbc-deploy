@@ -109,21 +109,3 @@ filegroup(
     repo = "@nixpkgs",
 )
 use_repo(nix_pkg, "nixpkgs_pv")
-
-# nixos-rebuild — the live-deploy target shells out to it; it's a NixOS tool not
-# present on a stock macOS/Determinate install, so vendor it (it evaluates and
-# builds for darwin, and supports remote --target-host deploys).
-nix_pkg.attr(
-    name = "nixpkgs_nixos_rebuild",
-    attr = "nixos-rebuild",
-    build_file_content = """\
-package(default_visibility = ["//visibility:public"])
-
-filegroup(
-    name = "nixos-rebuild",
-    srcs = ["bin/nixos-rebuild"],
-)
-""",
-    repo = "@nixpkgs",
-)
-use_repo(nix_pkg, "nixpkgs_nixos_rebuild")
