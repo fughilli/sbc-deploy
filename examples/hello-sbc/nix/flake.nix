@@ -18,15 +18,17 @@
     sbc-deploy.url = "github:fughilli/sbc-deploy?dir=nix";
   };
 
-  outputs = { self, sbc-deploy, ... }: {
-    nixosConfigurations.hello = sbc-deploy.lib.mkSbcSystem {
+  # mkSbcProject returns the full output set for all three deployment modes:
+  #   images.sdImage       — base + app          (hello.image_sd)
+  #   images.sdImageBase   — base only           (hello.image_sd_base)
+  #   nixosConfigurations.hello / hello-base      (hello.deploy_live)
+  # `appModules` land only in the full image/config; `systemModules` (networking,
+  # hardware) are baked into both so the base image can be reached for deploy.
+  outputs = { self, sbc-deploy, ... }:
+    sbc-deploy.lib.mkSbcProject {
       hostName = "hello";
       board = "raspberry-pi-5";
-      modules = [ ./hello-app.nix ];
+      appModules = [ ./hello-app.nix ];
+      systemModules = [ ./network.nix ];
     };
-
-    # The deploy targets read this attribute (`--attr images.sdImage`).
-    images.sdImage =
-      self.nixosConfigurations.hello.config.system.build.sdImage;
-  };
 }

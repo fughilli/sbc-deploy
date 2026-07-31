@@ -53,52 +53,66 @@ git_override(
 }
 ```
 
-**3. Wire the flake** (`nix/flake.nix`):
+**3. Wire the flake** (`nix/flake.nix`) with `mkSbcProject`. It splits your
+config into `appModules` (the application, in the full image only) and
+`systemModules` (networking/hardware, baked into both images so the base image
+is reachable), and returns the outputs for all three modes:
 
 ```nix
 {
   inputs.sbc-deploy.url = "github:fughilli/sbc-deploy?dir=nix";
-  outputs = { self, sbc-deploy, ... }: {
-    nixosConfigurations.myboard = sbc-deploy.lib.mkSbcSystem {
+  outputs = { self, sbc-deploy, ... }:
+    sbc-deploy.lib.mkSbcProject {
       hostName = "myboard";
-      board = "raspberry-pi-5";        # or "raspberry-pi-4"
-      modules = [ ./myapp.nix
-                  sbc-deploy.nixosModules.spi ];  # opt-in hardware
+      board = "raspberry-pi-5";               # or "raspberry-pi-4"
+      appModules = [ ./myapp.nix ];           # your application
+      systemModules = [ ./network.nix         # wifi etc. (both images)
+                        sbc-deploy.nixosModules.spi ];  # opt-in hardware
     };
-    images.sdImage =
-      self.nixosConfigurations.myboard.config.system.build.sdImage;
-  };
 }
 ```
 
 **4. Wire the Bazel targets** (`BUILD.bazel`):
 
 ```starlark
-load("@sbc_deploy//deploy:defs.bzl", "sbc_deploy")
+load("@sbc_deploy//deploy:defs.bzl", "sbc_application")
 
-sbc_deploy(
+sbc_application(
     name = "myboard",
     flake = "path/to/nix",   # workspace-relative dir holding flake.nix
     hostname = "myboard",
 )
 ```
 
-## The three targets
+## Deployment modes
+
+`sbc_application` generates a target per mode (plus `keys`):
 
 ```sh
-# Generate the deploy SSH key pair (idempotent).
-bazel run //path:myboard.keys        -- init
+# Generate the deploy SSH key pair (idempotent, once per project).
+bazel run //path:myboard.keys          -- init
 
-# Build the SD image; optionally flash it.
-bazel run //path:myboard.image_sd    -- --no-write          # build + print path
-bazel run //path:myboard.image_sd    -- --device /dev/sdX   # build + flash
+# Mode 1 — full system image: minimal system + your bundled application.
+bazel run //path:myboard.image_sd      -- --no-write          # build + print path
+bazel run //path:myboard.image_sd      -- --device /dev/sdX   # build + flash
 
-# Upgrade a running board in place (nixos-rebuild switch --target-host).
-bazel run //path:myboard.deploy_live -- myboard.local
+# Mode 2 — base system image only: networking/hardware config, no application.
+# Flash this once to provision a board, then push apps to it with deploy_live.
+bazel run //path:myboard.image_sd_base -- --device /dev/sdX
+
+# Mode 3 — push the application (and any required system deps) to a running
+# board in place (nixos-rebuild switch --target-host to the full system).
+bazel run //path:myboard.deploy_live   -- myboard.local
 ```
 
+| Mode | Target | What it deploys |
+| ---- | ------ | --------------- |
+| 1 | `image_sd` | Full SD image — base system **+** bundled app |
+| 2 | `image_sd_base` | SD image of the base system only (networking) |
+| 3 | `deploy_live` | App + its system deps onto a running board, no reflash |
+
 Anything after a `--` is forwarded verbatim to `nix build` / `nixos-rebuild`
-(e.g. `-- -- --dry-run`, or `--override-input` for local framework dev).
+(e.g. `-- -- --dry-run`, `--builder …`, or `--override-input` for local dev).
 
 ## SSH deploy key
 
@@ -309,17 +323,18 @@ image build end-to-end, flashing, first boot on a real Pi, and a live
 sbc-deploy/
   MODULE.bazel                 # Bazel module (rules_shell only)
   deploy/
-    defs.bzl                   # sbc_deploy macro (public API)
+    defs.bzl                   # sbc_application macro (public API)
     scripts/launch.sh          # runfiles launcher: exec nix bash on the script
     scripts/sbc_deploy.sh      # generic image/deploy/keys entrypoint
   nix/
-    flake.nix                  # lib.mkSbcSystem + nixosModules.*
+    flake.nix                  # lib.mkSbcProject / mkSbcSystem + nixosModules.*
     flake.lock                 # pinned inputs
     builder/flake.nix          # sized-up linux-builder VM for macOS hosts
     modules/
       sbc-base.nix             # networking / mDNS / firewall
       ssh-deploy.nix           # sshd + deploy-key trust
       app-service.nix          # services.sbcApps.<name> systemd generator
+      wifi.nix                 # sbcDeploy.wifi auto-connect (multi-network)
       spi.nix                  # opt-in hardware SPI
-  examples/hello-sbc/          # minimal runnable consumer
+  examples/hello-sbc/          # runnable consumer (app + network + 3 modes)
 ```

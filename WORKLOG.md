@@ -32,8 +32,10 @@ tooling in `fughilli/splanc`. It will be vendored back into splanc once solid.
   led-driver/led-server units.
 - `nix/modules/{sbc-base,ssh-deploy}.nix` — always-on (networking/mDNS/firewall;
   key-only sshd + deploy-key trust). `nix/modules/spi.nix` — opt-in hardware.
-- `deploy/defs.bzl` — `sbc_deploy()` macro (public API). Uses `Label("//deploy:…")`
-  so it resolves to `@sbc_deploy` from any consuming repo.
+- `deploy/defs.bzl` — `sbc_application()` macro (public API): emits `.image_sd`
+  (base+app), `.image_sd_base` (base only), `.deploy_live` (full switch),
+  `.keys`. Uses `Label("//deploy:…")` so it resolves to `@sbc_deploy` from any
+  consuming repo. Pairs with `lib.mkSbcProject` on the Nix side.
 - `deploy/scripts/sbc_deploy.sh` — one generic script backing all three targets
   (subcommands image|deploy|keys); config baked via sh_binary `args`, paths
   anchored on `BUILD_WORKSPACE_DIRECTORY`. `--` forwards the rest to nix verbatim.
@@ -83,6 +85,23 @@ tooling in `fughilli/splanc`. It will be vendored back into splanc once solid.
 ---
 
 ## Log
+
+### 2026-07-31 — three deployment modes via sbc_application
+
+Restructured the public API around three modes. Nix: added
+`lib.mkSbcProject { hostName; appModules; systemModules; board?; }` → returns
+`nixosConfigurations.{<host>, <host>-base}` + `images.{sdImage, sdImageBase}`.
+full = systemModules ++ appModules; base = systemModules only (networking, so
+the base image is reachable for live deploy). Bazel: renamed the macro
+`sbc_deploy` → `sbc_application`, now emitting `.image_sd` (mode 1: base+app),
+`.image_sd_base` (mode 2: base only, new `--attr images.sdImageBase`),
+`.deploy_live` (mode 3: switch running board to full), plus `.keys`. Example
+split into `hello-app.nix` (appModules) + `network.nix` (systemModules, holds
+the commented wifi). Verified: `bazel query` shows the 4 targets; flake (local
+override) exposes nixosConfigurations `[hello, hello-base]` and images
+`[sdImage, sdImageBase]`. No script change needed — image_sd_base is just a
+different `--attr`. NOTE: renamed macro/attr names are breaking; the example is
+updated, no other consumers yet.
 
 ### 2026-07-31 — WiFi auto-connect (multi-network + priority)
 

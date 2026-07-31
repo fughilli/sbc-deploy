@@ -79,9 +79,44 @@
             }
           ] ++ modules;
         };
+
+      # Build the standard outputs for one SBC application, supporting all three
+      # deployment modes (see the `sbc_application` Bazel macro):
+      #   * full system (base + app)  -> images.sdImage      (mode 1)
+      #   * base system (net only)    -> images.sdImageBase  (mode 2)
+      #   * full system for live switch -> nixosConfigurations.<hostName> (mode 3)
+      # Consumers usually return this directly as their flake outputs.
+      #   appModules    : the application — services.sbcApps + any system deps.
+      #   systemModules : base config baked into BOTH images (wifi, hardware…),
+      #                   so the base image can reach the network for deploy_live.
+      mkSbcProject =
+        { hostName
+        , board ? "raspberry-pi-5"
+        , appModules ? [ ]
+        , systemModules ? [ ]
+        , stateVersion ? "25.05"
+        }:
+        let
+          mk = extra: mkSbcSystem {
+            inherit hostName board stateVersion;
+            modules = systemModules ++ extra;
+          };
+          full = mk appModules;
+          base = mk [ ];
+        in
+        {
+          nixosConfigurations = {
+            ${hostName} = full;
+            "${hostName}-base" = base;
+          };
+          images = {
+            sdImage = full.config.system.build.sdImage;
+            sdImageBase = base.config.system.build.sdImage;
+          };
+        };
     in
     {
-      lib = { inherit mkSbcSystem; };
+      lib = { inherit mkSbcSystem mkSbcProject; };
 
       nixosModules = sbcModules // {
         # `default` = the always-on bundle, for `imports = [ ...default ]`.

@@ -1,21 +1,30 @@
-"""Public Bazel macro for wiring up sbc-deploy targets in a consuming package.
+"""Public Bazel macro for wiring up an SBC application's deploy targets.
+
+Pairs with `sbc-deploy.lib.mkSbcProject` on the Nix side, which exposes
+`images.sdImage` (base + app), `images.sdImageBase` (base only), and
+`nixosConfigurations.<hostName>` (full, for live switch).
 
 Usage (in a consumer BUILD.bazel):
 
-    load("@sbc_deploy//deploy:defs.bzl", "sbc_deploy")
+    load("@sbc_deploy//deploy:defs.bzl", "sbc_application")
 
-    sbc_deploy(
+    sbc_application(
         name = "myboard",
         flake = "path/to/nix",   # workspace-relative dir containing flake.nix
         hostname = "myboard",    # nixosConfigurations.<hostname>; default = project
         project = "myboard",     # key comment + messages; default = name
     )
 
-This creates three runnable targets:
+This creates targets for the three deployment modes (+ key management):
 
-    bazel run //consumer:myboard.image_sd    -- [--device /dev/sdX] [--no-write]
-    bazel run //consumer:myboard.deploy_live -- <host-or-ip> [--user root]
-    bazel run //consumer:myboard.keys        -- {init|ensure|rotate|path|pub}
+    # Mode 1 — full system image (minimal system + your bundled application):
+    bazel run //consumer:myboard.image_sd      -- [--device /dev/sdX] [--no-write]
+    # Mode 2 — base system image only (networking, no application):
+    bazel run //consumer:myboard.image_sd_base -- [--device /dev/sdX] [--no-write]
+    # Mode 3 — push the application (+ its system deps) to a running board:
+    bazel run //consumer:myboard.deploy_live   -- <host-or-ip> [--user root]
+
+    bazel run //consumer:myboard.keys          -- {init|ensure|rotate|path|pub}
 
 Each is an sh_binary whose src is a small launcher (launch.sh) that execs a
 nixpkgs-vendored bash on the real script (sbc_deploy.sh) — so the tool runs
@@ -34,21 +43,21 @@ _SCRIPT = Label("//deploy:scripts/sbc_deploy.sh")
 _BASH = Label("@nixpkgs_bash//:bash")
 _RUNFILES = Label("@bazel_tools//tools/bash/runfiles:runfiles")
 
-def sbc_deploy(
+def sbc_application(
         name,
         flake,
         hostname = None,
         project = None,
-        image_attr = "images.sdImage",
         visibility = None):
-    """Create image_sd / deploy_live / keys targets for one SBC config.
+    """Create the three deploy-mode targets (+ keys) for one SBC application.
 
     Args:
-      name: base name; targets are <name>.image_sd/.deploy_live/.keys.
-      flake: workspace-relative path to the directory holding flake.nix.
+      name: base name; targets are <name>.image_sd / .image_sd_base /
+        .deploy_live / .keys.
+      flake: workspace-relative path to the directory holding flake.nix (which
+        returns `sbc-deploy.lib.mkSbcProject { … }`).
       hostname: nixosConfigurations attr name for live deploy (default: project).
       project: project name for key comment/messages (default: name).
-      image_attr: flake attribute for the SD image (default: images.sdImage).
       visibility: visibility for the generated targets.
     """
     project = project or name
@@ -72,6 +81,13 @@ def sbc_deploy(
             visibility = visibility,
         )
 
-    _target("image_sd", ["image"] + base + ["--attr", image_attr])
+    # Mode 1: full system + bundled app.
+    _target("image_sd", ["image"] + base + ["--attr", "images.sdImage"])
+
+    # Mode 2: minimal base system (networking config), no app.
+    _target("image_sd_base", ["image"] + base + ["--attr", "images.sdImageBase"])
+
+    # Mode 3: switch a running board to the full system (app + system deps).
     _target("deploy_live", ["deploy"] + base + ["--hostname", hostname])
+
     _target("keys", ["keys"] + base)

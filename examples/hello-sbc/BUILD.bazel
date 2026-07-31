@@ -1,12 +1,14 @@
-# hello-sbc example — demonstrates the sbc_deploy macro.
+# hello-sbc example — demonstrates the sbc_application macro and its three
+# deployment modes.
 #
-#   bazel run //examples/hello-sbc:hello.keys        -- init
-#   bazel run //examples/hello-sbc:hello.image_sd    -- --no-write
-#   bazel run //examples/hello-sbc:hello.deploy_live -- hello.local
+#   bazel run //examples/hello-sbc:hello.keys          -- init
+#   bazel run //examples/hello-sbc:hello.image_sd      -- --no-write   # base + app
+#   bazel run //examples/hello-sbc:hello.image_sd_base -- --no-write   # base only
+#   bazel run //examples/hello-sbc:hello.deploy_live   -- hello.local  # push app
 
-load("@sbc_deploy//deploy:defs.bzl", "sbc_deploy")
+load("@sbc_deploy//deploy:defs.bzl", "sbc_application")
 
-sbc_deploy(
+sbc_application(
     name = "hello",
     flake = "examples/hello-sbc/nix",
     hostname = "hello",

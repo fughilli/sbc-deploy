@@ -18,13 +18,4 @@ in
     ports = [ 8080 ];
     stateDirectory = "hello";
   };
-
-  # Auto-connect to WiFi on boot (headless field use). Uncomment and set your
-  # networks, most-preferred first (or set per-network `priority`). Passphrases
-  # are baked into the image — see nix/modules/wifi.nix. To keep them out of your
-  # repo, leave this commented and export $SBC_WIFI_SSID / $SBC_WIFI_PSK instead.
-  # sbcDeploy.wifi.networks = [
-  #   { ssid = "Home Wi-Fi";    psk = "hunter2"; priority = 100; }
-  #   { ssid = "Phone Hotspot"; psk = "swordfish"; }
-  # ];
 }
