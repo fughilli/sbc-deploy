@@ -86,6 +86,16 @@ tooling in `fughilli/splanc`. It will be vendored back into splanc once solid.
 
 ## Log
 
+### 2026-07-31 — flash fix: image path is a dir; readlink -f is Linux-only
+
+First real flash on the Mac failed (`zstd: … is a directory`, 0 bytes). The
+sdImage store output is a DIRECTORY itself named `…img.zst`, with the real image
+at `sd-image/*.img.zst` inside; the `find` (no `-type f`) matched the directory.
+Also `readlink -f` (used to resolve the out-link) doesn't exist on BSD/macOS.
+Fixed: capture the out path from `nix build --no-link --print-out-paths` (stdout)
+instead of readlink, and `find … -type f` so it picks the inner file. Mock-tested
+the find. (This never surfaced before because prior runs were `--no-write`.)
+
 ### 2026-07-31 — cross-platform SD flashing (image_sd --device)
 
 The old flash path was Linux-only (`lsblk`, `dd status=progress conv=fsync`) and

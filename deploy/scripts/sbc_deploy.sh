@@ -205,18 +205,22 @@ cmd_image() {
   set_framework_override
 
   echo "==> Building SD image: path:${flake_dir}#${IMAGE_ATTR}"
+  # Capture the store output path from --print-out-paths (stdout); build progress
+  # stays on stderr. Avoids `readlink -f`, which BSD/macOS doesn't support.
   # ${arr[@]+…} guards the empty-array-under-`set -u` case on bash 3.2 (macOS).
-  nix build \
+  local out img
+  out="$(nix build \
     ${FRAMEWORK_ARGS[@]+"${FRAMEWORK_ARGS[@]}"} \
     ${BUILDER_ARGS[@]+"${BUILDER_ARGS[@]}"} \
     ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
-    --impure \
-    --print-out-paths \
-    "path:${flake_dir}#${IMAGE_ATTR}" \
-    --out-link /tmp/sbc-image-"$PROJECT"
-  local out img
-  out="$(readlink -f /tmp/sbc-image-"$PROJECT")"
-  img="$(find "$out" -maxdepth 2 \( -name '*.img' -o -name '*.img.zst' \) | head -n1)"
+    --impure --no-link --print-out-paths \
+    "path:${flake_dir}#${IMAGE_ATTR}" | tail -n1)"
+  [[ -n "$out" ]] || die "nix build produced no output path."
+  # The output is a DIRECTORY (itself named …img.zst); the actual image is a file
+  # inside it (e.g. sd-image/*.img.zst) — restrict to -type f so we don't pick
+  # the directory.
+  img="$(find "$out" -maxdepth 2 -type f \( -name '*.img' -o -name '*.img.zst' \) | head -n1)"
+  [[ -n "$img" ]] || die "no .img/.img.zst file found under $out."
   echo "==> Built image: $img"
 
   if [[ $WRITE -eq 0 || -z "$DEVICE" ]]; then
