@@ -21,8 +21,11 @@
 set -euo pipefail
 
 # Runs under the nixpkgs-vendored bash via launch.sh (see deploy/defs.bzl).
-# Set SBC_DEBUG=1 to confirm which interpreter is in use.
-[[ -n "${SBC_DEBUG:-}" ]] && echo "sbc-deploy: bash=${BASH:-?} ${BASH_VERSION:-?}" >&2
+# Set SBC_DEBUG=1 to confirm which interpreter is in use + resolved wifi config.
+[[ -n "${SBC_DEBUG:-}" ]] && {
+  echo "sbc-deploy: bash=${BASH:-?} ${BASH_VERSION:-?}" >&2
+  echo "sbc-deploy: wifi_config_json=${SBC_WIFI_CONFIG_JSON:-<none>}" >&2
+}
 
 # --- config, overridable by flags or environment ---------------------------
 SUBCMD="${1:-}"

@@ -53,6 +53,25 @@ let
     };
   };
 
+  # Declarative networks from a YAML file (converted to JSON in the Bazel graph;
+  # see the sbc_application `wifi_config_file` arg). The env var holds an absolute
+  # path to that JSON, read here at eval (`--impure`). Accepts a top-level list or
+  # a `{ networks = [ … ]; }` object.
+  cfgJsonPath = builtins.getEnv "SBC_WIFI_CONFIG_JSON";
+  fileNetworks =
+    if cfgJsonPath == "" then [ ]
+    else
+      let
+        raw = builtins.fromJSON (builtins.readFile (/. + cfgJsonPath));
+        list = if builtins.isList raw then raw else (raw.networks or [ ]);
+      in
+      map (n: {
+        ssid = n.ssid;
+        psk = n.psk or null;
+        hidden = n.hidden or false;
+        priority = n.priority or null;
+      }) list;
+
   # A single network from $SBC_WIFI_SSID / $SBC_WIFI_PSK, if set — appended last
   # (lowest default priority) so explicit `networks` take precedence.
   envSsid = builtins.getEnv "SBC_WIFI_SSID";
@@ -64,7 +83,7 @@ let
     priority = null;
   };
 
-  networks = cfg.networks ++ envNetworks;
+  networks = cfg.networks ++ fileNetworks ++ envNetworks;
   count = builtins.length networks;
 
   # Highest-priority = first in the list when `priority` is unset.

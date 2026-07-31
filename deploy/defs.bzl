@@ -41,6 +41,7 @@ load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 _LAUNCHER = Label("//deploy:scripts/launch.sh")
 _SCRIPT = Label("//deploy:scripts/sbc_deploy.sh")
 _BASH = Label("@nixpkgs_bash//:bash")
+_YJ = Label("@nixpkgs_yj//:yj")
 _RUNFILES = Label("@bazel_tools//tools/bash/runfiles:runfiles")
 
 def sbc_application(
@@ -49,6 +50,7 @@ def sbc_application(
         hostname = None,
         project = None,
         framework = None,
+        wifi_config_file = None,
         visibility = None):
     """Create the three deploy-mode targets (+ keys) for one SBC application.
 
@@ -65,6 +67,9 @@ def sbc_application(
         Bazel is the single source of the framework version — no
         `nix flake update`. Omit for external bazel_dep consumers, who pin the
         framework via their own flake input.
+      wifi_config_file: label of a single YAML file listing WiFi networks (ssid /
+        psk / priority / hidden) to auto-connect to. Converted to JSON at build
+        time and baked into the image. Merges with any inline `sbcDeploy.wifi`.
       visibility: visibility for the generated targets.
     """
     project = project or name
@@ -73,13 +78,34 @@ def sbc_application(
     if framework:
         base += ["--framework-subdir", framework]
 
-    # The launcher resolves these two runfiles paths, then execs bash on the
-    # script. rlocationpath is repo-qualified, so it works from any consumer.
+    # Declarative WiFi: convert the YAML to JSON in the Bazel graph so Nix reads
+    # it natively (fromJSON). The launcher resolves the JSON's runfiles path and
+    # exports it for eval. Empty third lead arg when there's no config file.
+    wifi_data = []
+    wifi_lead = "-"  # sentinel: no wifi config file
+    if wifi_config_file:
+        json_out = name + "_wifi.json"
+        native.genrule(
+            name = name + "_wifi_json",
+            srcs = [wifi_config_file],
+            outs = [json_out],
+            tools = [_YJ],
+            cmd = "$(execpath {yj}) -yj < $(execpath {yaml}) > $@".format(
+                yj = _YJ,
+                yaml = wifi_config_file,
+            ),
+        )
+        wifi_data = [":" + json_out]
+        wifi_lead = "$(rlocationpath :{})".format(json_out)
+
+    # The launcher resolves these runfiles paths, then execs bash on the script.
+    # rlocationpath is repo-qualified, so it works from any consumer.
     lead = [
         "$(rlocationpath {})".format(_SCRIPT),
         "$(rlocationpath {})".format(_BASH),
+        wifi_lead,
     ]
-    data = [_SCRIPT, _BASH, _RUNFILES]
+    data = [_SCRIPT, _BASH, _RUNFILES] + wifi_data
 
     def _target(suffix, argv):
         sh_binary(
@@ -120,6 +146,7 @@ def sbc_linux_builder(name = "linux_builder", framework = "nix", visibility = No
         args = [
             "$(rlocationpath {})".format(_SCRIPT),
             "$(rlocationpath {})".format(_BASH),
+            "-",  # no wifi config file
             "builder",
             "--framework-subdir",
             framework,

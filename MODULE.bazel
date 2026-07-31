@@ -57,3 +57,22 @@ filegroup(
     repo = "@nixpkgs",
 )
 use_repo(nix_pkg, "nixpkgs_bash")
+
+# yj — a tiny static Go binary that converts YAML/TOML/HCL <-> JSON. Used by the
+# `wifi_config_file` path of the sbc_application macro to convert a declarative
+# WiFi YAML into JSON at build time, so Nix reads it with the native fromJSON
+# (no YAML parser or import-from-derivation needed on the Nix side).
+nix_pkg.attr(
+    name = "nixpkgs_yj",
+    attr = "yj",
+    build_file_content = """\
+package(default_visibility = ["//visibility:public"])
+
+filegroup(
+    name = "yj",
+    srcs = ["bin/yj"],
+)
+""",
+    repo = "@nixpkgs",
+)
+use_repo(nix_pkg, "nixpkgs_yj")

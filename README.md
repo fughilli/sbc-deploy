@@ -146,8 +146,8 @@ There is no password fallback — lose the private key and you re-image.
 - `ssh-deploy` — key-only sshd, deploy key trust, remote-rebuild toolchain.
 - `app-service` — the `services.sbcApps.<name>` systemd generator (hardened
   units, dedicated service user, runtime/state dirs, firewall openings).
-- `wifi` — optional `sbcDeploy.wifi` auto-connect (inert until you set an SSID);
-  see "WiFi auto-connect" below.
+- `wifi` — optional auto-connect: inline `sbcDeploy.wifi.networks`, a declarative
+  `wifi_config_file` (YAML), or env vars; see "WiFi auto-connect" below.
 
 Opt-in extras (add to `modules`): `sbc-deploy.nixosModules.spi` (hardware SPI +
 `spi`/`gpio` groups + udev, for SK9822/APA102-style peripherals).
@@ -173,9 +173,39 @@ of your config:
 `priority` maps to NetworkManager's `autoconnect-priority` (higher = preferred).
 Omit it and networks fall back to **list order** — earlier entries win.
 
-To keep passphrases out of your repo, a single network can come from build-time
-env vars instead — the image/deploy targets build `--impure`, so exported vars
-reach eval (added at lowest priority, after any `networks`):
+### As a declarative YAML file
+
+Instead of inline Nix, point the `sbc_application` macro at a single YAML file
+(`wifi_config_file`) — a list of networks, converted to JSON in the Bazel graph
+and baked in (no manual nix step, nothing to keep in sync):
+
+```starlark
+sbc_application(
+    name = "myboard",
+    flake = "path/to/nix",
+    framework = "nix",
+    wifi_config_file = "wifi.yaml",   # a label in this package
+)
+```
+
+```yaml
+# wifi.yaml — most-preferred first, or set an explicit `priority`.
+- ssid: Home Wi-Fi
+  psk: hunter2
+  priority: 100
+- ssid: Phone Hotspot
+  psk: swordfish
+- ssid: GuestOpen          # open network — omit psk
+# - { ssid: Hidden, psk: "…", hidden: true }
+```
+
+File networks merge with any inline `sbcDeploy.wifi.networks`. Keep a real
+`wifi.yaml` out of git (e.g. `.gitignore` it) if it holds live passphrases.
+
+### Without committing a passphrase
+
+A single network can come from build-time env vars — the image/deploy targets
+build `--impure`, so exported vars reach eval (added at lowest priority):
 
 ```sh
 export SBC_WIFI_SSID="Home Wi-Fi" SBC_WIFI_PSK="hunter2"

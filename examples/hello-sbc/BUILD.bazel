@@ -15,4 +15,7 @@ sbc_application(
     # sbc-deploy's own framework lives in this same repo at //nix, so inject it:
     # the targets build against the in-tree framework (no `nix flake update`).
     framework = "nix",
+    # Declarative WiFi: a YAML list of networks (placeholder creds here). Swap in
+    # real values, or drop this arg and use inline sbcDeploy.wifi / env vars.
+    wifi_config_file = "wifi.yaml",
 )

@@ -86,6 +86,20 @@ tooling in `fughilli/splanc`. It will be vendored back into splanc once solid.
 
 ## Log
 
+### 2026-07-31 — declarative WiFi via wifi_config_file (YAML)
+
+`sbc_application(wifi_config_file = "wifi.yaml")` — a single YAML list of
+networks (ssid/psk/priority/hidden). Converted YAML→JSON in the Bazel graph via
+nixpkgs `yj` (imported as `@nixpkgs_yj`, like bash), so Nix reads it with native
+`fromJSON` — no YAML parser or import-from-derivation on the Nix side. Plumbing:
+macro adds a genrule (`<name>_wifi.json`) + a 3rd launcher lead arg
+(rlocationpath, or `-` sentinel when absent); launch.sh resolves it and exports
+`SBC_WIFI_CONFIG_JSON`; wifi.nix reads that path and merges into `networks`
+(cfg ++ file ++ env). Verified end-to-end on the container: yj genrule output
+correct; `keys` run resolves+exports the runfiles JSON path (SBC_DEBUG shows it);
+wifi.nix eval yields sbc-wifi-0/1/2 with priorities 100/10/1 and open-vs-wpa-psk.
+Example wired live with a placeholder `examples/hello-sbc/wifi.yaml`.
+
 ### 2026-07-31 — Bazel drives nix; kill `nix flake update`
 
 User pushback: too many manual nix commands. Fixed the recurring one — the

@@ -25,10 +25,19 @@ source "${RUNFILES_DIR:-/dev/null}/$f" 2>/dev/null || \
 
 script_rlocationpath="$1"; shift
 bash_rlocationpath="$1"; shift
+wifi_json_rlocationpath="$1"; shift   # "-" sentinel when no wifi config file
 
 script="$(rlocation "$script_rlocationpath")" || {
   echo >&2 "ERROR: could not resolve deploy script ($script_rlocationpath) in runfiles"; exit 1; }
 bash_bin="$(rlocation "$bash_rlocationpath")" || {
   echo >&2 "ERROR: could not resolve nixpkgs bash ($bash_rlocationpath) in runfiles"; exit 1; }
+
+# Declarative WiFi: the macro converted the YAML to JSON in the build graph; make
+# its (absolute) runfiles path available to Nix eval via the environment.
+if [[ "$wifi_json_rlocationpath" != "-" ]]; then
+  SBC_WIFI_CONFIG_JSON="$(rlocation "$wifi_json_rlocationpath")" || {
+    echo >&2 "ERROR: could not resolve wifi config json ($wifi_json_rlocationpath) in runfiles"; exit 1; }
+  export SBC_WIFI_CONFIG_JSON
+fi
 
 exec "$bash_bin" "$script" "$@"
