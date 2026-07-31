@@ -8,3 +8,10 @@ exports_files([
 exports_files(
     glob(["scripts/*.sh"]),
 )
+
+# Runnable seeder so consumers can `bazel run @sbc_deploy//deploy:seed_wifi -- …`
+# to add persistent WiFi networks to a running board without a rebuild.
+sh_binary(
+    name = "seed_wifi",
+    srcs = ["scripts/seed_wifi.sh"],
+)
