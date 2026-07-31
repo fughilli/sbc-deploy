@@ -126,8 +126,9 @@ Anything after a `--` is forwarded verbatim to `nix build` / `nixos-rebuild`
 ### Flashing the SD card
 
 Pass `--device` to write the built image to a card. The target handles both
-Linux and macOS, decompresses the `.img.zst` on the fly (bundled `zstd`), and
-asks you to re-type the device path to confirm before overwriting.
+Linux and macOS, decompresses the `.img.zst` on the fly (bundled `zstd`), shows
+a progress bar / ETA (bundled `pv`), and asks you to re-type the device path to
+confirm before overwriting.
 
 ```sh
 # Linux — find the card (e.g. /dev/sdX), then:
@@ -135,7 +136,7 @@ lsblk
 bazel run //path:myboard.image_sd -- --device /dev/sdX
 
 # macOS — find the disk id, then pass /dev/diskN (it uses the raw node + diskutil
-# to unmount/eject; press Ctrl-T during the write for progress):
+# to unmount/eject):
 diskutil list
 bazel run //path:myboard.image_sd -- --device /dev/disk4
 ```

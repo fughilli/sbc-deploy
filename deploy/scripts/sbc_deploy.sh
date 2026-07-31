@@ -26,6 +26,7 @@ set -euo pipefail
   echo "sbc-deploy: bash=${BASH:-?} ${BASH_VERSION:-?}" >&2
   echo "sbc-deploy: wifi_config_json=${SBC_WIFI_CONFIG_JSON:-<none>}" >&2
   echo "sbc-deploy: zstd=${SBC_ZSTD:-<none>}" >&2
+  echo "sbc-deploy: pv=${SBC_PV:-<none>}" >&2
 }
 
 # --- config, overridable by flags or environment ---------------------------
@@ -233,39 +234,55 @@ cmd_image() {
   flash_image "$img" "$DEVICE"
 }
 
+# Stream the image bytes to stdout, decompressing .zst on the fly and, when pv is
+# available, through pv for a progress bar/ETA. pv reads the (compressed) file
+# directly so it auto-sizes the bar.
+stream_image() {
+  local img="$1" pv="$2" zstd="$3" have_pv="$4"
+  if [[ "$have_pv" == 1 ]]; then
+    if [[ "$img" == *.zst ]]; then "$pv" "$img" | "$zstd" -dc; else "$pv" "$img"; fi
+  else
+    if [[ "$img" == *.zst ]]; then "$zstd" -dc "$img"; else cat "$img"; fi
+  fi
+}
+
 # Write an image (raw or .zst) to a block device, cross-platform (Linux + macOS).
 flash_image() {
   local img="$1" device="$2"
   local os; os="$(uname -s)"
 
-  # zstd: prefer the bundled one (SBC_ZSTD, from the launcher), else PATH.
-  local zstd="${SBC_ZSTD:-zstd}"
+  # Prefer the bundled tools (SBC_ZSTD/SBC_PV, from the launcher), else PATH.
+  local zstd="${SBC_ZSTD:-zstd}" pv="${SBC_PV:-pv}"
   if [[ "$img" == *.zst ]]; then
     command -v "$zstd" >/dev/null 2>&1 \
       || die "zstd not found to decompress the image. Install it (nix profile install nixpkgs#zstd, or brew/apt install zstd)."
   fi
+  local have_pv=0
+  command -v "$pv" >/dev/null 2>&1 && have_pv=1
 
   echo "!!  About to OVERWRITE $device with the $PROJECT image."
   if [[ "$os" == "Darwin" ]]; then diskutil list "$device" || true; else lsblk "$device" || true; fi
   read -r -p "Type the device path again to confirm ($device): " confirm
   [[ "$confirm" == "$device" ]] || die "Mismatch; aborting."
 
-  # Source: decompress on the fly, or stream the raw image.
-  local -a src
-  if [[ "$img" == *.zst ]]; then src=("$zstd" -dc "$img"); else src=(cat "$img"); fi
-
   if [[ "$os" == "Darwin" ]]; then
     # Unmount (not eject) so the raw device stays open; write to the raw node
-    # (/dev/rdiskN) with a lowercase-suffix block size (BSD dd). No
-    # status=progress/conv=fsync on BSD dd — press Ctrl-T for progress.
+    # (/dev/rdiskN) with a lowercase-suffix block size (BSD dd).
     sudo diskutil unmountDisk "$device" || true
     local rdev="/dev/r${device#/dev/}"
-    echo "==> Writing to $rdev (raw; press Ctrl-T for progress)…"
-    "${src[@]}" | sudo dd of="$rdev" bs=4m
+    echo "==> Writing to $rdev (raw)…"
+    [[ $have_pv -eq 1 ]] || echo "   (no pv; press Ctrl-T for progress)"
+    stream_image "$img" "$pv" "$zstd" "$have_pv" | sudo dd of="$rdev" bs=4m
     sync
     sudo diskutil eject "$device" || true
   else
-    "${src[@]}" | sudo dd of="$device" bs=4M status=progress conv=fsync
+    echo "==> Writing to $device…"
+    if [[ $have_pv -eq 1 ]]; then
+      # pv shows the progress bar; keep dd quiet but flush at the end.
+      stream_image "$img" "$pv" "$zstd" "$have_pv" | sudo dd of="$device" bs=4M conv=fsync
+    else
+      stream_image "$img" "$pv" "$zstd" "$have_pv" | sudo dd of="$device" bs=4M status=progress conv=fsync
+    fi
     sync
   fi
   echo "==> Done. Insert the card into the board and boot."

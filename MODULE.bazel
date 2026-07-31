@@ -93,3 +93,19 @@ filegroup(
     repo = "@nixpkgs",
 )
 use_repo(nix_pkg, "nixpkgs_zstd")
+
+# pv — pipe-viewer, for a progress bar/ETA while writing the image to the card.
+nix_pkg.attr(
+    name = "nixpkgs_pv",
+    attr = "pv",
+    build_file_content = """\
+package(default_visibility = ["//visibility:public"])
+
+filegroup(
+    name = "pv",
+    srcs = ["bin/pv"],
+)
+""",
+    repo = "@nixpkgs",
+)
+use_repo(nix_pkg, "nixpkgs_pv")

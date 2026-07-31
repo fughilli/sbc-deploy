@@ -27,6 +27,7 @@ script_rlocationpath="$1"; shift
 bash_rlocationpath="$1"; shift
 wifi_json_rlocationpath="$1"; shift   # "-" sentinel when no wifi config file
 zstd_rlocationpath="$1"; shift        # "-" sentinel when not needed (e.g. builder)
+pv_rlocationpath="$1"; shift          # "-" sentinel when not needed
 
 script="$(rlocation "$script_rlocationpath")" || {
   echo >&2 "ERROR: could not resolve deploy script ($script_rlocationpath) in runfiles"; exit 1; }
@@ -46,6 +47,13 @@ if [[ "$zstd_rlocationpath" != "-" ]]; then
   SBC_ZSTD="$(rlocation "$zstd_rlocationpath")" || {
     echo >&2 "ERROR: could not resolve zstd ($zstd_rlocationpath) in runfiles"; exit 1; }
   export SBC_ZSTD
+fi
+
+# Bundled pv for a progress bar while writing the image to the card.
+if [[ "$pv_rlocationpath" != "-" ]]; then
+  SBC_PV="$(rlocation "$pv_rlocationpath")" || {
+    echo >&2 "ERROR: could not resolve pv ($pv_rlocationpath) in runfiles"; exit 1; }
+  export SBC_PV
 fi
 
 exec "$bash_bin" "$script" "$@"

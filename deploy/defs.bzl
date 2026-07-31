@@ -43,6 +43,7 @@ _SCRIPT = Label("//deploy:scripts/sbc_deploy.sh")
 _BASH = Label("@nixpkgs_bash//:bash")
 _YJ = Label("@nixpkgs_yj//:yj")
 _ZSTD = Label("@nixpkgs_zstd//:zstd")
+_PV = Label("@nixpkgs_pv//:pv")
 _RUNFILES = Label("@bazel_tools//tools/bash/runfiles:runfiles")
 
 def sbc_application(
@@ -101,14 +102,15 @@ def sbc_application(
 
     # The launcher resolves these runfiles paths, then execs bash on the script.
     # rlocationpath is repo-qualified, so it works from any consumer. Order:
-    # script, bash, wifi-json (or "-"), zstd.
+    # script, bash, wifi-json (or "-"), zstd, pv.
     lead = [
         "$(rlocationpath {})".format(_SCRIPT),
         "$(rlocationpath {})".format(_BASH),
         wifi_lead,
         "$(rlocationpath {})".format(_ZSTD),
+        "$(rlocationpath {})".format(_PV),
     ]
-    data = [_SCRIPT, _BASH, _ZSTD, _RUNFILES] + wifi_data
+    data = [_SCRIPT, _BASH, _ZSTD, _PV, _RUNFILES] + wifi_data
 
     def _target(suffix, argv):
         sh_binary(
@@ -151,6 +153,7 @@ def sbc_linux_builder(name = "linux_builder", framework = "nix", visibility = No
             "$(rlocationpath {})".format(_BASH),
             "-",  # no wifi config file
             "-",  # no zstd (the builder never flashes)
+            "-",  # no pv
             "builder",
             "--framework-subdir",
             framework,

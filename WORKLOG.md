@@ -86,6 +86,16 @@ tooling in `fughilli/splanc`. It will be vendored back into splanc once solid.
 
 ## Log
 
+### 2026-07-31 — flashing progress bar (bundled pv)
+
+Pipe the write through `pv` for a progress bar/ETA on both OSes. Bundled `pv`
+from nixpkgs (`@nixpkgs_pv`, like zstd) → 5th launcher lead arg → `SBC_PV`
+(falls back to PATH pv; sentinel `-` for the builder target). flash_image now
+streams `pv <img.zst> | zstd -dc | dd` (pv reads the compressed file so it
+auto-sizes the bar); when pv is absent it keeps the old behavior (Linux `dd
+status=progress`, macOS Ctrl-T note). Verified: bazel build clean; pv resolves
+(SBC_DEBUG); stub test shows the pv|zstd|dd pipeline + diskutil calls assemble.
+
 ### 2026-07-31 — flash fix: image path is a dir; readlink -f is Linux-only
 
 First real flash on the Mac failed (`zstd: … is a directory`, 0 bytes). The
