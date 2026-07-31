@@ -365,6 +365,43 @@ this rev, so the builder compiles it once — give it ≥8 GB RAM and ~25 GB fre
 For `deploy_live`, the same `--builder` applies; alternatively add
 `-- --build-host <pi>` to build directly on the target board.
 
+### Persisting the build cache (so you can stop the builder)
+
+The builder VM's store already survives a **stop/restart** (it's on the
+persistent qcow2, not tmpfs) — `shutdown now` in its console when idle, restart
+with `bazel run //:linux_builder`, and the compiled kernel is still there. You
+only lose it if you *delete/recreate* the qcow2.
+
+To also survive recreating the VM — and to make the cache a real, restartable
+service — run a **binary cache** on the Mac that serves its (persistent) nix
+store:
+
+```sh
+bazel run //:cache        # harmonia; leave it running. Ctrl-C to stop, re-run to restart.
+```
+
+On first run it generates a signing key under `~/.config/sbc-deploy/` and prints
+the **public key**. Add that key and the cache URL to your Nix config
+(`/etc/nix/nix.custom.conf` on Determinate, else `/etc/nix/nix.conf`), then
+restart the daemon:
+
+```
+extra-substituters = http://localhost:5000
+extra-trusted-public-keys = sbc-deploy-cache-1:AAAA…   # the printed key
+```
+
+How it helps: the cache serves the Mac store, and **build artifacts land in the
+Mac store whenever the Mac realizes them** — in particular `deploy_live` builds
+the system closure (which contains the kernel), so after one deploy the kernel
+is cached. A freshly recreated builder then gets the kernel from the Mac
+(copied as a build input, or substituted from the cache) instead of recompiling.
+
+To let the builder VM substitute over HTTP directly, add
+`extra-substituters = http://10.0.2.2:5000` (the QEMU host gateway) to the
+*builder's* nix config — but note that changing the builder's guest config makes
+it miss the cached VM image (a one-time rebuild); the copy-as-input path above
+needs no builder change.
+
 ## Verification status
 
 Verified in the sbc-deploy dev container (aarch64, Determinate Nix 3.21.8,
@@ -403,6 +440,7 @@ sbc-deploy/
     flake.nix                  # lib.mkSbcProject / mkSbcSystem + nixosModules.*
     flake.lock                 # pinned inputs
     builder/flake.nix          # sized-up linux-builder VM for macOS hosts
+    cache/flake.nix            # restartable harmonia binary cache (//:cache)
     modules/
       sbc-base.nix             # networking / mDNS / firewall
       ssh-deploy.nix           # sshd + deploy-key trust

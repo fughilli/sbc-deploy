@@ -381,6 +381,19 @@ cmd_builder() {
   exec nix run ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} "path:${bflake}#linux-builder"
 }
 
+# ---------------------------------------------------------------------------
+# cache — start the harmonia binary cache (serves the local nix store). Long-
+# running; leave it up while building. Needs the framework in-tree.
+# ---------------------------------------------------------------------------
+cmd_cache() {
+  command -v nix >/dev/null 2>&1 || die "'nix' not found."
+  [[ -n "$FRAMEWORK_SUBDIR" ]] || die "--framework-subdir not set; the cache target needs sbc-deploy's nix/ in the source tree."
+  local cflake; cflake="$(repo_root)/${FRAMEWORK_SUBDIR%/}/cache"
+  [[ -f "$cflake/flake.nix" ]] || die "cache flake not found at $cflake."
+  echo "==> Starting harmonia binary cache from path:$cflake (leave running; Ctrl-C to stop)"
+  exec nix run ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} "path:${cflake}#cache"
+}
+
 # --- dispatch ---------------------------------------------------------------
 POSITIONAL=()
 parse_common_flags "$@"
@@ -391,6 +404,7 @@ case "$SUBCMD" in
   deploy)  cmd_deploy ;;
   ssh)     cmd_ssh ;;
   builder) cmd_builder ;;
+  cache)   cmd_cache ;;
   ""|-h|--help)
     cat >&2 <<EOF
 sbc-deploy: usage via the Bazel targets created by the sbc_application macro:
@@ -405,5 +419,5 @@ linux-builder VM target, or pass --builder (a nix --builders spec) /
 SBC_NIX_BUILDERS. See the README "Building on Apple Silicon".
 EOF
     exit 2 ;;
-  *) die "unknown subcommand '$SUBCMD' (expected image|deploy|ssh|keys|builder)" ;;
+  *) die "unknown subcommand '$SUBCMD' (expected image|deploy|ssh|keys|builder|cache)" ;;
 esac

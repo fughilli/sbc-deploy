@@ -137,18 +137,9 @@ def sbc_application(
 
     _target("keys", ["keys"] + base)
 
-def sbc_linux_builder(name = "linux_builder", framework = "nix", visibility = None):
-    """A target that starts the sized-up linux-builder VM (macOS aarch64).
-
-    `bazel run //…:linux_builder` — starts the VM (long-running; leave it up in
-    its terminal), so building images on macOS needs no manual `nix run`.
-
-    Args:
-      name: target name.
-      framework: workspace-relative path to sbc-deploy's `nix/` dir; the builder
-        flake is its `builder/` subdir. Only meaningful in-repo / vendored.
-      visibility: target visibility.
-    """
+def _tool_target(name, subcommand, framework, visibility):
+    """A long-running `nix run` helper (builder VM / harmonia cache) from the
+    in-tree framework. No wifi/zstd/pv/deploy tooling, hence the "-" sentinels."""
     sh_binary(
         name = name,
         srcs = [_LAUNCHER],
@@ -157,11 +148,36 @@ def sbc_linux_builder(name = "linux_builder", framework = "nix", visibility = No
             "$(rlocationpath {})".format(_SCRIPT),
             "$(rlocationpath {})".format(_BASH),
             "-",  # no wifi config file
-            "-",  # no zstd (the builder never flashes)
+            "-",  # no zstd
             "-",  # no pv
-            "builder",
+            subcommand,
             "--framework-subdir",
             framework,
         ],
         visibility = visibility,
     )
+
+def sbc_linux_builder(name = "linux_builder", framework = "nix", visibility = None):
+    """`bazel run //…:linux_builder` — start the sized-up aarch64-linux builder
+    VM (macOS), long-running, so building on macOS needs no manual `nix run`.
+
+    Args:
+      name: target name.
+      framework: workspace-relative path to sbc-deploy's `nix/` dir (its
+        `builder/` subdir holds the flake). Only meaningful in-repo / vendored.
+      visibility: target visibility.
+    """
+    _tool_target(name, "builder", framework, visibility)
+
+def sbc_cache(name = "cache", framework = "nix", visibility = None):
+    """`bazel run //…:cache` — start the harmonia binary cache serving the local
+    nix store, long-running. Its store (and signing key) persist across restarts,
+    so cached build artifacts (e.g. the RPi kernel) survive builder restarts.
+
+    Args:
+      name: target name.
+      framework: workspace-relative path to sbc-deploy's `nix/` dir (its
+        `cache/` subdir holds the flake). Only meaningful in-repo / vendored.
+      visibility: target visibility.
+    """
+    _tool_target(name, "cache", framework, visibility)

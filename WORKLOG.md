@@ -91,6 +91,24 @@ The core framework is proven end-to-end on hardware (see above). Remaining:
 
 ## Log
 
+### 2026-07-31 — persistent binary cache (harmonia) + builder persistence note
+
+User wanted to persist the build cache without keeping the builder VM live.
+Findings: the builder VM's store is on the persistent qcow2 (writableStore=true,
+writableStoreUseTmpfs=false; GC only under ~1 GB free), so it already survives
+stop/restart — the earlier kernel recompile was only from *deleting* the qcow2.
+For a decoupled, restartable cache (survives VM recreation): added
+`nix/cache/flake.nix` — a harmonia runner (writeShellApplication) that
+auto-generates a signing key under ~/.config/sbc-deploy and serves the local nix
+store on `[::]:5000` (reachable from the QEMU VM at 10.0.2.2). Exposed as
+`bazel run //:cache` (sbc_cache macro → new `cache` subcommand → `nix run
+path:$fw/cache#cache`; refactored builder+cache into `_tool_target`). Key
+mechanism (documented): the Mac store persists build artifacts; the kernel lands
+there when the Mac realizes the system closure (deploy_live), so a recreated
+builder gets it via copy-as-input or substitution instead of recompiling.
+Verified: cache flake evals for darwin (`sbc-cache/bin/sbc-cache`); bazel
+build //:cache + query clean. Real harmonia serving untested (no darwin here).
+
 ### 2026-07-31 — deploy_live without nixos-rebuild (nix build + copy + switch)
 
 The bundled nixos-rebuild ran but died: `Exec format error` on

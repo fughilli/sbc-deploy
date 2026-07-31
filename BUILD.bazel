@@ -1,12 +1,20 @@
 # Root package marker for the sbc-deploy module.
 package(default_visibility = ["//visibility:public"])
 
-load("//deploy:defs.bzl", "sbc_linux_builder")
+load("//deploy:defs.bzl", "sbc_cache", "sbc_linux_builder")
 
 # `bazel run //:linux_builder` — start the sized-up aarch64-linux builder VM
 # (macOS), so building images needs no manual `nix run`. Long-running; leave it
 # up in its terminal. (No-op need on Linux hosts, which build natively.)
 sbc_linux_builder(
     name = "linux_builder",
+    framework = "nix",
+)
+
+# `bazel run //:cache` — start a harmonia binary cache serving the local nix
+# store, so cached build artifacts (e.g. the RPi kernel) persist across builder
+# restarts. Long-running; leave it up while building.
+sbc_cache(
+    name = "cache",
     framework = "nix",
 )
