@@ -8,6 +8,10 @@ startup --host_jvm_args=-XX:UseSVE=0
 common --enable_bzlmod
 common --registry=https://bcr.bazel.build
 
+# Enables `isolate = True` on the rules_nixpkgs extension usages (MODULE.bazel),
+# required so `.attr`/`.github` are legal when sbc-deploy is a dependency module.
+common --experimental_isolated_extension_usages
+
 # Deterministic action environment.
 build --incompatible_strict_action_env
 

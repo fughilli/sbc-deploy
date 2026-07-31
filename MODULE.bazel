@@ -32,7 +32,12 @@ bazel_dep(name = "rules_shell", version = "0.4.0")
 # ---------------------------------------------------------------------------
 bazel_dep(name = "rules_nixpkgs_core", version = "0.13.0")
 
-nix_repo = use_extension("@rules_nixpkgs_core//extensions:repository.bzl", "nix_repo")
+# `isolate = True`: rules_nixpkgs' `.attr`/`.github` tags are only allowed in the
+# root module or an ISOLATED extension usage. sbc-deploy is the root when built
+# standalone, but a *dependency* when a consumer (e.g. splanc) vendors it — so
+# isolate the usages to keep them legal (and namespaced) either way. Requires
+# `--experimental_isolated_extension_usages` (set in .bazelrc).
+nix_repo = use_extension("@rules_nixpkgs_core//extensions:repository.bzl", "nix_repo", isolate = True)
 nix_repo.github(
     name = "nixpkgs",
     org = "NixOS",
@@ -42,7 +47,7 @@ nix_repo.github(
 )
 use_repo(nix_repo, "nixpkgs")
 
-nix_pkg = use_extension("@rules_nixpkgs_core//extensions:package.bzl", "nix_pkg")
+nix_pkg = use_extension("@rules_nixpkgs_core//extensions:package.bzl", "nix_pkg", isolate = True)
 nix_pkg.attr(
     name = "nixpkgs_bash",
     attr = "bash",

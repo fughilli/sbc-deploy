@@ -86,10 +86,10 @@
         "recordedRepoMappingEntries": []
       }
     },
-    "@@rules_nixpkgs_core~//extensions:package.bzl%nix_pkg": {
+    "@@rules_nixpkgs_core~//extensions:package.bzl%nix_pkg%<root>~nix_pkg": {
       "general": {
         "bzlTransitiveDigest": "2alEQC7q9PgrArc8ZeI662VmDHLGfuswqnzBJvVDnmg=",
-        "usagesDigest": "3PdLUSrxdxPr4Bpgj6hw8eMWA+qSc/ZV4hfxGmmjDBE=",
+        "usagesDigest": "zGEunjbrO0Xm98LxsRtwXcVyAyPY/7iBagfCBk1y6yA=",
         "recordedFileInputs": {},
         "recordedDirentsInputs": {},
         "envVariables": {},
@@ -102,7 +102,7 @@
               "attribute_path": "bash",
               "nix_file_deps": {},
               "nix_file_content": "",
-              "repository": "@@rules_nixpkgs_core~~nix_repo~nixpkgs//:nixpkgs",
+              "repository": "@@rules_nixpkgs_core~~_nix_repo~~~nix_repo~nixpkgs//:nixpkgs",
               "repositories": {},
               "build_file_content": "package(default_visibility = [\"//visibility:public\"])\n\nfilegroup(\n    name = \"bash\",\n    srcs = [\"bin/bash\"],\n)\n",
               "nixopts": [],
@@ -118,7 +118,7 @@
               "attribute_path": "yj",
               "nix_file_deps": {},
               "nix_file_content": "",
-              "repository": "@@rules_nixpkgs_core~~nix_repo~nixpkgs//:nixpkgs",
+              "repository": "@@rules_nixpkgs_core~~_nix_repo~~~nix_repo~nixpkgs//:nixpkgs",
               "repositories": {},
               "build_file_content": "package(default_visibility = [\"//visibility:public\"])\n\nfilegroup(\n    name = \"yj\",\n    srcs = [\"bin/yj\"],\n)\n",
               "nixopts": [],
@@ -134,7 +134,7 @@
               "attribute_path": "zstd",
               "nix_file_deps": {},
               "nix_file_content": "",
-              "repository": "@@rules_nixpkgs_core~~nix_repo~nixpkgs//:nixpkgs",
+              "repository": "@@rules_nixpkgs_core~~_nix_repo~~~nix_repo~nixpkgs//:nixpkgs",
               "repositories": {},
               "build_file_content": "package(default_visibility = [\"//visibility:public\"])\n\nfilegroup(\n    name = \"zstd\",\n    srcs = [\"bin/zstd\"],\n)\n",
               "nixopts": [],
@@ -150,7 +150,7 @@
               "attribute_path": "pv",
               "nix_file_deps": {},
               "nix_file_content": "",
-              "repository": "@@rules_nixpkgs_core~~nix_repo~nixpkgs//:nixpkgs",
+              "repository": "@@rules_nixpkgs_core~~_nix_repo~~~nix_repo~nixpkgs//:nixpkgs",
               "repositories": {},
               "build_file_content": "package(default_visibility = [\"//visibility:public\"])\n\nfilegroup(\n    name = \"pv\",\n    srcs = [\"bin/pv\"],\n)\n",
               "nixopts": [],
@@ -174,7 +174,7 @@
           [
             "",
             "nixpkgs",
-            "rules_nixpkgs_core~~nix_repo~nixpkgs"
+            "rules_nixpkgs_core~~_nix_repo~~~nix_repo~nixpkgs"
           ],
           [
             "rules_nixpkgs_core~",
@@ -188,6 +188,43 @@
       "general": {
         "bzlTransitiveDigest": "dTTtWNdwe7E4j77oKh1mHI1qtdxfaVSGSZa1oPf2QjU=",
         "usagesDigest": "wa/AzsvFHmcx1/k49PT8aQzASFSPf+LcJtHxM94vS5w=",
+        "recordedFileInputs": {},
+        "recordedDirentsInputs": {},
+        "envVariables": {},
+        "generatedRepoSpecs": {
+          "nixpkgs": {
+            "bzlFile": "@@rules_nixpkgs_core~//:nixpkgs.bzl",
+            "ruleClassName": "_nixpkgs_http_repository",
+            "attributes": {
+              "unmangled_name": "nixpkgs",
+              "url": "https://github.com/NixOS/nixpkgs/archive/refs/tags/25.05.tar.gz",
+              "strip_prefix": "nixpkgs-25.05",
+              "integrity": "",
+              "sha256": "130b4257b3d53bfbfea6d61fb76d4751a3989a4a09a28615ff77516a82b3924d"
+            }
+          }
+        },
+        "moduleExtensionMetadata": {
+          "explicitRootModuleDirectDeps": [
+            "nixpkgs"
+          ],
+          "explicitRootModuleDirectDevDeps": [],
+          "useAllRepos": "NO",
+          "reproducible": false
+        },
+        "recordedRepoMappingEntries": [
+          [
+            "rules_nixpkgs_core~",
+            "bazel_skylib",
+            "bazel_skylib~"
+          ]
+        ]
+      }
+    },
+    "@@rules_nixpkgs_core~//extensions:repository.bzl%nix_repo%<root>~nix_repo": {
+      "general": {
+        "bzlTransitiveDigest": "dTTtWNdwe7E4j77oKh1mHI1qtdxfaVSGSZa1oPf2QjU=",
+        "usagesDigest": "5IIvpG9osuOWKOyMJq04DQZvID8WzN2xwvLUMw7Xy0c=",
         "recordedFileInputs": {},
         "recordedDirentsInputs": {},
         "envVariables": {},

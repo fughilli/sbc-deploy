@@ -91,6 +91,17 @@ The core framework is proven end-to-end on hardware (see above). Remaining:
 
 ## Log
 
+### 2026-07-31 — isolate nix extension usages (reusability fix)
+
+Vendoring sbc-deploy into splanc surfaced a bug: `nix_pkg.attr` (and `.github`)
+are only allowed in the root module OR an isolated extension usage. Fine
+standalone (sbc-deploy is root), but as a *dependency* it failed with "Illegal
+use of the attr tag". Fixed: `use_extension(..., isolate = True)` on both
+nix_repo and nix_pkg in MODULE.bazel, and enabled
+`--experimental_isolated_extension_usages` in .bazelrc (also needed standalone
+now). Verified: sbc-deploy `bazel build //...` clean; splanc
+`//pi/provisioning:ledmapper.keys` builds against the vendored module.
+
 ### 2026-07-31 — persistent binary cache (harmonia) + builder persistence note
 
 User wanted to persist the build cache without keeping the builder VM live.
