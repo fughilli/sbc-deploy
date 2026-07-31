@@ -123,9 +123,47 @@ There is no password fallback — lose the private key and you re-image.
 - `ssh-deploy` — key-only sshd, deploy key trust, remote-rebuild toolchain.
 - `app-service` — the `services.sbcApps.<name>` systemd generator (hardened
   units, dedicated service user, runtime/state dirs, firewall openings).
+- `wifi` — optional `sbcDeploy.wifi` auto-connect (inert until you set an SSID);
+  see "WiFi auto-connect" below.
 
 Opt-in extras (add to `modules`): `sbc-deploy.nixosModules.spi` (hardware SPI +
 `spi`/`gpio` groups + udev, for SK9822/APA102-style peripherals).
+
+## WiFi auto-connect
+
+For a headless board, declare one or more networks and it joins on boot (one
+NetworkManager profile each, `wifi.nix` — always on, inert until you add a
+network). When several are in range, the highest priority wins. In any module
+of your config:
+
+```nix
+{
+  sbcDeploy.wifi.networks = [
+    { ssid = "Home Wi-Fi";    psk = "hunter2";   priority = 100; }
+    { ssid = "Phone Hotspot"; psk = "swordfish"; priority = 10; }
+    { ssid = "GuestOpen"; }   # open network (no psk)
+    # { ssid = "Hidden"; psk = "…"; hidden = true; }
+  ];
+}
+```
+
+`priority` maps to NetworkManager's `autoconnect-priority` (higher = preferred).
+Omit it and networks fall back to **list order** — earlier entries win.
+
+To keep passphrases out of your repo, a single network can come from build-time
+env vars instead — the image/deploy targets build `--impure`, so exported vars
+reach eval (added at lowest priority, after any `networks`):
+
+```sh
+export SBC_WIFI_SSID="Home Wi-Fi" SBC_WIFI_PSK="hunter2"
+bazel run //path:myboard.image_sd -- --no-write
+```
+
+> **Security:** the passphrase is written into the NixOS closure, which lives in
+> the world-readable `/nix/store` on the device and in the image. Fine for a
+> home/lab network on a hobby board; for real secret hygiene use NetworkManager's
+> `ensureProfiles.environmentFiles` with a `$VAR` placeholder and provision the
+> env file on the device out of band.
 
 ## Requirements
 

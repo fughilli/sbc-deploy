@@ -39,6 +39,7 @@
         sbc-base = modulesDir + "/sbc-base.nix";
         ssh-deploy = modulesDir + "/ssh-deploy.nix";
         app-service = modulesDir + "/app-service.nix";
+        wifi = modulesDir + "/wifi.nix";
         spi = modulesDir + "/spi.nix";
       };
 
@@ -65,10 +66,12 @@
               ];
             })
 
-            # Reusable sbc-deploy modules (always on).
+            # Reusable sbc-deploy modules (always on; wifi is inert unless an
+            # SSID is configured via sbcDeploy.wifi / $SBC_WIFI_SSID).
             sbcModules.sbc-base
             sbcModules.ssh-deploy
             sbcModules.app-service
+            sbcModules.wifi
 
             {
               networking.hostName = hostName;
@@ -82,7 +85,7 @@
 
       nixosModules = sbcModules // {
         # `default` = the always-on bundle, for `imports = [ ...default ]`.
-        default = { imports = [ sbcModules.sbc-base sbcModules.ssh-deploy sbcModules.app-service ]; };
+        default = { imports = [ sbcModules.sbc-base sbcModules.ssh-deploy sbcModules.app-service sbcModules.wifi ]; };
       };
     };
 }

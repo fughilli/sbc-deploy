@@ -54,12 +54,11 @@ tooling in `fughilli/splanc`. It will be vendored back into splanc once solid.
 
 ### NOT verified / known ceilings
 
-- **Full `nixos-raspberrypi` eval OOM-kills on this ~3.8 GB container** (exit
-  137, during nixpkgs fetch) — got through the whole input graph + into eval
-  with no expression errors first. Host-resource limit, same as the splanc
-  module documented (it built to the kernel-compile step on an 8 GB aarch64
-  host). **Needs a bigger aarch64 builder to prove the image builds end-to-end.**
+- **End-to-end image build: DONE** on the user's Apple-Silicon Mac (2026-07-31)
+  via the sized linux-builder VM — produced a real `*.img.zst`. (On this ~3.8 GB
+  container a full eval still OOM-kills; that's just the container, not the code.)
 - No flashing, **no real-hardware first boot**, no live `deploy_live` switch.
+  WiFi auto-connect (`wifi.nix`) eval-verified but not booted on hardware.
 - Only `raspberry-pi-5` exercised; `raspberry-pi-4` untried.
 - The `hello-sbc` app is a placeholder (`python3 -m http.server`).
 
@@ -84,6 +83,20 @@ tooling in `fughilli/splanc`. It will be vendored back into splanc once solid.
 ---
 
 ## Log
+
+### 2026-07-31 — WiFi auto-connect (multi-network + priority)
+
+Added `nix/modules/wifi.nix` (always-on in mkSbcSystem, inert until configured):
+`sbcDeploy.wifi.networks = [ { ssid; psk?; hidden?; priority?; } … ]` → one
+NetworkManager `ensureProfiles` profile per network. `priority` →
+`connection.autoconnect-priority` (higher wins); unset falls back to list order
+(earlier = higher, via `count - index`). Single network can also come from
+`$SBC_WIFI_SSID`/`$SBC_WIFI_PSK` at eval (`--impure`), appended lowest priority.
+Validated by NixOS eval on the container (profiles + priorities correct; open vs
+wpa-psk). Passphrase lands in the world-readable store/image — documented, with
+the `ensureProfiles.environmentFiles` `$VAR` route noted for secret hygiene.
+Note: first real end-to-end SD image (`.img.zst`) was built on the user's Mac
+just before this — pipeline proven; WiFi itself still needs a real-hardware boot.
 
 ### 2026-07-30 — builders line needs big-parallel feature
 
