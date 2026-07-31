@@ -112,6 +112,11 @@ bazel run //path:myboard.image_sd_base -- --device /dev/sdX
 # Mode 3 — push the application (and any required system deps) to a running
 # board in place (nixos-rebuild switch --target-host to the full system).
 bazel run //path:myboard.deploy_live   -- myboard.local
+
+# Convenience — ssh in with the deploy key (defaults to <hostname>.local):
+bazel run //path:myboard.ssh                            # -> root@myboard.local
+bazel run //path:myboard.ssh -- 192.168.1.42           # explicit host/IP
+bazel run //path:myboard.ssh -- -- systemctl status sbc-web   # run a remote command
 ```
 
 | Mode | Target | What it deploys |

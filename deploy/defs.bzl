@@ -24,6 +24,8 @@ This creates targets for the three deployment modes (+ key management):
     # Mode 3 — push the application (+ its system deps) to a running board:
     bazel run //consumer:myboard.deploy_live   -- <host-or-ip> [--user root]
 
+    # Convenience — ssh in with the deploy key (default <hostname>.local):
+    bazel run //consumer:myboard.ssh           -- [host-or-ip]
     bazel run //consumer:myboard.keys          -- {init|ensure|rotate|path|pub}
 
 Each is an sh_binary whose src is a small launcher (launch.sh) that execs a
@@ -129,6 +131,9 @@ def sbc_application(
 
     # Mode 3: switch a running board to the full system (app + system deps).
     _target("deploy_live", ["deploy"] + base + ["--hostname", hostname])
+
+    # Convenience: ssh to the board with the deploy key (default <hostname>.local).
+    _target("ssh", ["ssh"] + base + ["--hostname", hostname])
 
     _target("keys", ["keys"] + base)
 

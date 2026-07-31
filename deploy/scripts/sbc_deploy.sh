@@ -326,6 +326,30 @@ cmd_deploy() {
 }
 
 # ---------------------------------------------------------------------------
+# ssh — open a shell on the board using the deploy key. Host defaults to
+# <hostName>.local (mDNS); override with a positional host/IP. Extra args after
+# `--` are forwarded to ssh (e.g. a remote command).
+# ---------------------------------------------------------------------------
+cmd_ssh() {
+  command -v ssh >/dev/null 2>&1 || die "'ssh' not found."
+  key_paths
+  [[ -f "$PRIV" ]] || die "deploy private key not found at $PRIV. Generate it with the .keys target (keys init) and image/deploy the board first."
+  chmod 600 "$PRIV" 2>/dev/null || true
+
+  local host target
+  host="${POSITIONAL[0]:-}"
+  [[ -n "$host" ]] || host="${HOSTNAME_ATTR:-$PROJECT}.local"
+  target="${DEPLOY_USER}@${host}"
+
+  echo "==> ssh $target (deploy key: $PRIV)" >&2
+  exec ssh -i "$PRIV" \
+    -o IdentitiesOnly=yes \
+    -o StrictHostKeyChecking=accept-new \
+    "$target" \
+    ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
+}
+
+# ---------------------------------------------------------------------------
 # builder — start the sized-up linux-builder VM (macOS). Long-running; leave it
 # up in its terminal. Needs the framework in-tree (--framework-subdir).
 # ---------------------------------------------------------------------------
@@ -346,6 +370,7 @@ case "$SUBCMD" in
   keys)    cmd_keys ;;
   image)   cmd_image ;;
   deploy)  cmd_deploy ;;
+  ssh)     cmd_ssh ;;
   builder) cmd_builder ;;
   ""|-h|--help)
     cat >&2 <<EOF
@@ -353,6 +378,7 @@ sbc-deploy: usage via the Bazel targets created by the sbc_application macro:
   bazel run //path:NAME.image_sd      -- [--device /dev/sdX] [--no-write] [--builder <spec>]
   bazel run //path:NAME.image_sd_base -- [--device /dev/sdX] [--no-write]
   bazel run //path:NAME.deploy_live   -- <host-or-ip> [--user root] [--builder <spec>]
+  bazel run //path:NAME.ssh           -- [host-or-ip] [--user root] [-- <ssh args>]
   bazel run //path:NAME.keys          -- {init|ensure|rotate|path|pub}
 
 On aarch64-darwin (Apple Silicon) an image can't be built locally; run the
@@ -360,5 +386,5 @@ linux-builder VM target, or pass --builder (a nix --builders spec) /
 SBC_NIX_BUILDERS. See the README "Building on Apple Silicon".
 EOF
     exit 2 ;;
-  *) die "unknown subcommand '$SUBCMD' (expected image|deploy|keys|builder)" ;;
+  *) die "unknown subcommand '$SUBCMD' (expected image|deploy|ssh|keys|builder)" ;;
 esac

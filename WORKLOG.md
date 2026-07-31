@@ -86,6 +86,15 @@ tooling in `fughilli/splanc`. It will be vendored back into splanc once solid.
 
 ## Log
 
+### 2026-07-31 — ssh convenience target
+
+Added an `ssh` subcommand + `<name>.ssh` macro target: `ssh -i <deploy_key> -o
+IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new <user>@<host>`, host
+defaulting to `<hostName>.local` (mDNS) or a positional override; `-- <args>`
+forwarded to ssh (e.g. a remote command). Uses the same key_paths/secrets as
+deploy. Verified: bazel query shows hello.ssh; stub test confirms default host,
+explicit host, and passthrough-remote-command all assemble correctly.
+
 ### 2026-07-31 — flashing progress bar (bundled pv)
 
 Pipe the write through `pv` for a progress bar/ETA on both OSes. Bundled `pv`
