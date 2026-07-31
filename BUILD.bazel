@@ -1,2 +1,12 @@
 # Root package marker for the sbc-deploy module.
 package(default_visibility = ["//visibility:public"])
+
+load("//deploy:defs.bzl", "sbc_linux_builder")
+
+# `bazel run //:linux_builder` — start the sized-up aarch64-linux builder VM
+# (macOS), so building images needs no manual `nix run`. Long-running; leave it
+# up in its terminal. (No-op need on Linux hosts, which build natively.)
+sbc_linux_builder(
+    name = "linux_builder",
+    framework = "nix",
+)

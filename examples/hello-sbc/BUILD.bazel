@@ -12,4 +12,7 @@ sbc_application(
     name = "hello",
     flake = "examples/hello-sbc/nix",
     hostname = "hello",
+    # sbc-deploy's own framework lives in this same repo at //nix, so inject it:
+    # the targets build against the in-tree framework (no `nix flake update`).
+    framework = "nix",
 )

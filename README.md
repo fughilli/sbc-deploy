@@ -81,8 +81,17 @@ sbc_application(
     name = "myboard",
     flake = "path/to/nix",   # workspace-relative dir holding flake.nix
     hostname = "myboard",
+    # If sbc-deploy's own nix/ lives in this repo (in-repo or vendored in-tree),
+    # point at it — the targets then build against that in-tree framework via
+    # --override-input, so Bazel is the single version pin (no `nix flake
+    # update`). Omit for external bazel_dep consumers, who pin via their flake.
+    # framework = "third_party/sbc-deploy/nix",
 )
 ```
+
+Once `framework` is set, the deploy targets are fully self-contained: they inject
+that framework into every `nix build` / `nixos-rebuild`, so bumping the framework
+is a single Bazel pin — you never run `nix flake update` for it.
 
 ## Deployment modes
 
@@ -249,13 +258,19 @@ builder**: same CPU arch, so it runs at full speed with full cache hits.
 
    - **Bigger, persistent size — this repo's flake** (8 GB RAM / 60 GB disk / 6
      cores). It `.override`s the *packaged* builder, so the guest closure is
-     identical to stock and comes straight from the cache — no bootstrap:
+     identical to stock and comes straight from the cache — no bootstrap.
+     In-repo (or vendored in-tree), just run the Bazel target:
+
+     ```sh
+     bazel run //:linux_builder
+     ```
+
+     Standalone (framework not in your tree), run the flake directly — quote the
+     URL, since `?`/`#` are shell metacharacters (fish/zsh):
 
      ```sh
      nix run 'github:fughilli/sbc-deploy?dir=nix/builder#linux-builder'
      ```
-
-     (Quote the URL — `?`/`#` are shell metacharacters, especially in fish/zsh.)
 
 3. Build — the targets now work with **no `--builder` flag** (Nix routes the
    `aarch64-linux` builds to the VM):

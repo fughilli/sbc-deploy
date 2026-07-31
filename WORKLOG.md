@@ -86,6 +86,27 @@ tooling in `fughilli/splanc`. It will be vendored back into splanc once solid.
 
 ## Log
 
+### 2026-07-31 — Bazel drives nix; kill `nix flake update`
+
+User pushback: too many manual nix commands. Fixed the recurring one — the
+example fetched the framework from github with its own flake.lock, so it drifted
+from the Bazel pin and needed `nix flake update` on every framework change.
+Now `sbc_application(framework = "nix")` bakes `--framework-subdir nix`, and the
+script injects `--override-input sbc-deploy path:$BUILD_WORKSPACE_DIRECTORY/nix`
+into every `nix build` / `nixos-rebuild` (guarded on the dir existing) — so the
+in-tree framework is the single source of truth; no lock update. Also added a
+`builder` subcommand + `sbc_linux_builder` macro → `//:linux_builder` target
+(`bazel run //:linux_builder` starts the sized VM; no manual `nix run`).
+Verified via stub nix: image injects the override before the consumer flake;
+`builder` runs `nix run path:…/nix/builder#linux-builder`. Bazel query shows
+`//:linux_builder` + the 4 app targets.
+
+Irreducible manual bits (documented, not removable by Bazel): one-time host nix
+config on macOS (trusted-users + the `builders` line + ssh alias, needs sudo),
+and the builder VM being a long-running background process (it's a target now,
+but you still leave it running). External bazel_dep consumers without the
+framework in-tree still pin it via their flake input (omit `framework`).
+
 ### 2026-07-31 — three deployment modes via sbc_application
 
 Restructured the public API around three modes. Nix: added

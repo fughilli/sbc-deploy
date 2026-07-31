@@ -48,6 +48,7 @@ def sbc_application(
         flake,
         hostname = None,
         project = None,
+        framework = None,
         visibility = None):
     """Create the three deploy-mode targets (+ keys) for one SBC application.
 
@@ -58,11 +59,19 @@ def sbc_application(
         returns `sbc-deploy.lib.mkSbcProject { … }`).
       hostname: nixosConfigurations attr name for live deploy (default: project).
       project: project name for key comment/messages (default: name).
+      framework: workspace-relative path to sbc-deploy's own `nix/` flake dir,
+        when it lives in the same source tree (in-repo, or vendored in-tree).
+        When set, builds inject it via `--override-input sbc-deploy path:…` so
+        Bazel is the single source of the framework version — no
+        `nix flake update`. Omit for external bazel_dep consumers, who pin the
+        framework via their own flake input.
       visibility: visibility for the generated targets.
     """
     project = project or name
     hostname = hostname or project
     base = ["--project", project, "--flake-subdir", flake]
+    if framework:
+        base += ["--framework-subdir", framework]
 
     # The launcher resolves these two runfiles paths, then execs bash on the
     # script. rlocationpath is repo-qualified, so it works from any consumer.
@@ -91,3 +100,29 @@ def sbc_application(
     _target("deploy_live", ["deploy"] + base + ["--hostname", hostname])
 
     _target("keys", ["keys"] + base)
+
+def sbc_linux_builder(name = "linux_builder", framework = "nix", visibility = None):
+    """A target that starts the sized-up linux-builder VM (macOS aarch64).
+
+    `bazel run //…:linux_builder` — starts the VM (long-running; leave it up in
+    its terminal), so building images on macOS needs no manual `nix run`.
+
+    Args:
+      name: target name.
+      framework: workspace-relative path to sbc-deploy's `nix/` dir; the builder
+        flake is its `builder/` subdir. Only meaningful in-repo / vendored.
+      visibility: target visibility.
+    """
+    sh_binary(
+        name = name,
+        srcs = [_LAUNCHER],
+        data = [_SCRIPT, _BASH, _RUNFILES],
+        args = [
+            "$(rlocationpath {})".format(_SCRIPT),
+            "$(rlocationpath {})".format(_BASH),
+            "builder",
+            "--framework-subdir",
+            framework,
+        ],
+        visibility = visibility,
+    )

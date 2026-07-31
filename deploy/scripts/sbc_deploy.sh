@@ -43,9 +43,27 @@ DEPLOY_HOST=""
 # a native aarch64-linux builder. Space/semicolon-separated nix `--builders`
 # spec; see the README "Building on Apple Silicon".
 NIX_BUILDERS="${SBC_NIX_BUILDERS:-}"
+# Workspace-relative path to sbc-deploy's own nix/ flake dir, when it lives in
+# the same source tree (in-repo example, or vendored in-tree). When set, builds
+# inject it via `--override-input sbc-deploy path:…` so Bazel is the single
+# source of the framework version — no `nix flake update` needed. Empty for
+# external bazel_dep consumers, who pin the framework via their flake input.
+FRAMEWORK_SUBDIR="${SBC_DEPLOY_FRAMEWORK_SUBDIR:-}"
 EXTRA_ARGS=()
 
 die() { echo "ERROR: $*" >&2; exit 1; }
+
+# Populate FRAMEWORK_ARGS with an --override-input that points the consumer's
+# `sbc-deploy` flake input at the in-tree framework (if present), so the build
+# always uses the Bazel-pinned version rather than the flake.lock's github pin.
+FRAMEWORK_ARGS=()
+set_framework_override() {
+  FRAMEWORK_ARGS=()
+  [[ -n "$FRAMEWORK_SUBDIR" ]] || return 0
+  local fw; fw="$(repo_root)/${FRAMEWORK_SUBDIR%/}"
+  [[ -f "$fw/flake.nix" ]] || return 0
+  FRAMEWORK_ARGS=(--override-input sbc-deploy "path:$fw")
+}
 
 # Populate the global BUILDER_ARGS array with nix flags that dispatch all builds
 # to the configured aarch64-linux builder(s). --max-jobs 0 forbids local builds
@@ -79,6 +97,7 @@ parse_common_flags() {
       --flake-subdir) FLAKE_SUBDIR="$2"; shift 2 ;;
       --attr)         IMAGE_ATTR="$2"; shift 2 ;;
       --hostname)     HOSTNAME_ATTR="$2"; shift 2 ;;
+      --framework-subdir) FRAMEWORK_SUBDIR="$2"; shift 2 ;;
       --secrets-dir)  SECRETS_DIR_OVERRIDE="$2"; shift 2 ;;
       --device)          DEVICE="$2"; shift 2 ;;
       --no-write|--no_write) WRITE=0; shift ;;
@@ -179,10 +198,12 @@ cmd_image() {
   export SBC_DEPLOY_PUBKEY_FILE="$PUB"
 
   set_builder_args
+  set_framework_override
 
   echo "==> Building SD image: path:${flake_dir}#${IMAGE_ATTR}"
   # ${arr[@]+…} guards the empty-array-under-`set -u` case on bash 3.2 (macOS).
   nix build \
+    ${FRAMEWORK_ARGS[@]+"${FRAMEWORK_ARGS[@]}"} \
     ${BUILDER_ARGS[@]+"${BUILDER_ARGS[@]}"} \
     ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
     --impure \
@@ -235,6 +256,7 @@ cmd_deploy() {
   export SBC_DEPLOY_PUBKEY_FILE="$PUB"
 
   set_builder_args
+  set_framework_override
 
   echo "==> Deploying path:${flake_dir}#${attr} to $target (in-place switch)"
   # On aarch64-darwin, either pass --builder (dispatch the build to a linux
@@ -244,9 +266,23 @@ cmd_deploy() {
     --target-host "$target" \
     --use-remote-sudo \
     --impure \
+    ${FRAMEWORK_ARGS[@]+"${FRAMEWORK_ARGS[@]}"} \
     ${BUILDER_ARGS[@]+"${BUILDER_ARGS[@]}"} \
     ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
   echo "==> Switch complete on $DEPLOY_HOST."
+}
+
+# ---------------------------------------------------------------------------
+# builder — start the sized-up linux-builder VM (macOS). Long-running; leave it
+# up in its terminal. Needs the framework in-tree (--framework-subdir).
+# ---------------------------------------------------------------------------
+cmd_builder() {
+  command -v nix >/dev/null 2>&1 || die "'nix' not found."
+  [[ -n "$FRAMEWORK_SUBDIR" ]] || die "--framework-subdir not set; the linux-builder target needs sbc-deploy's nix/ in the source tree."
+  local bflake; bflake="$(repo_root)/${FRAMEWORK_SUBDIR%/}/builder"
+  [[ -f "$bflake/flake.nix" ]] || die "builder flake not found at $bflake."
+  echo "==> Starting linux-builder VM from path:$bflake (leave running; 'shutdown now' in its console, or Ctrl-C, to stop)"
+  exec nix run ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} "path:${bflake}#linux-builder"
 }
 
 # --- dispatch ---------------------------------------------------------------
@@ -254,20 +290,22 @@ POSITIONAL=()
 parse_common_flags "$@"
 
 case "$SUBCMD" in
-  keys)   cmd_keys ;;
-  image)  cmd_image ;;
-  deploy) cmd_deploy ;;
+  keys)    cmd_keys ;;
+  image)   cmd_image ;;
+  deploy)  cmd_deploy ;;
+  builder) cmd_builder ;;
   ""|-h|--help)
     cat >&2 <<EOF
-sbc-deploy: usage via the Bazel targets created by the sbc_deploy macro:
-  bazel run //path:NAME.image_sd    -- [--device /dev/sdX] [--no-write] [--builder <spec>]
-  bazel run //path:NAME.deploy_live -- <host-or-ip> [--user root] [--builder <spec>]
-  bazel run //path:NAME.keys        -- {init|ensure|rotate|path|pub}
+sbc-deploy: usage via the Bazel targets created by the sbc_application macro:
+  bazel run //path:NAME.image_sd      -- [--device /dev/sdX] [--no-write] [--builder <spec>]
+  bazel run //path:NAME.image_sd_base -- [--device /dev/sdX] [--no-write]
+  bazel run //path:NAME.deploy_live   -- <host-or-ip> [--user root] [--builder <spec>]
+  bazel run //path:NAME.keys          -- {init|ensure|rotate|path|pub}
 
-On aarch64-darwin (Apple Silicon) an image can't be built locally; pass
---builder (a nix --builders spec) or set SBC_NIX_BUILDERS to dispatch the build
-to an aarch64-linux builder. See the README "Building on Apple Silicon".
+On aarch64-darwin (Apple Silicon) an image can't be built locally; run the
+linux-builder VM target, or pass --builder (a nix --builders spec) /
+SBC_NIX_BUILDERS. See the README "Building on Apple Silicon".
 EOF
     exit 2 ;;
-  *) die "unknown subcommand '$SUBCMD' (expected image|deploy|keys)" ;;
+  *) die "unknown subcommand '$SUBCMD' (expected image|deploy|keys|builder)" ;;
 esac
