@@ -1,0 +1,15 @@
+# Declarative WiFi networks for hello-sbc, most-preferred first (or set an
+# explicit `priority` — higher wins). Referenced from BUILD.bazel via the
+# sbc_application `wifi_config_file` arg; converted to JSON at build time and
+# baked into the image.
+#
+# Copy this to `wifi.yaml` (gitignored) and fill in real credentials. The real
+# file is never committed — passphrases would otherwise land in the world-readable
+# image/store *and* in git history. For real secret hygiene use NetworkManager's
+# environmentFiles instead of a plaintext PSK here.
+- ssid: YOUR_SSID
+  psk: YOUR_PSK
+  priority: 100
+- ssid: YOUR_FALLBACK_SSID
+  psk: YOUR_FALLBACK_PSK
+  priority: 10
