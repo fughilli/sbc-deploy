@@ -246,6 +246,28 @@ bazel run //path:myboard.image_sd -- --no-write
 > `ensureProfiles.environmentFiles` with a `$VAR` placeholder and provision the
 > env file on the device out of band.
 
+### Seeding networks at runtime (no rebuild)
+
+The networks above are the **baked** layer: declared in the config, written to
+ephemeral `/run/NetworkManager/system-connections`, regenerated every boot. You
+can also **seed** networks onto a running board — a persistent layer in
+`/etc/NetworkManager/system-connections` that `switch-to-configuration` never
+touches, so a redeploy can't clobber it. Provisioned out of band, never in git or
+the store:
+
+```sh
+# add one, or a batch from a wifi.yaml-schema file:
+deploy/scripts/seed_wifi.sh --host myboard.local --ssh-key secrets/deploy_key \
+    --ssid CoffeeShop --psk latte12345 --priority 25
+deploy/scripts/seed_wifi.sh --host myboard.local --ssh-key secrets/deploy_key \
+    --file secrets/wifi-seed.yaml
+deploy/scripts/seed_wifi.sh --host myboard.local --list
+deploy/scripts/seed_wifi.sh --host myboard.local --remove CoffeeShop
+```
+
+Baked + seeded compose by `priority`. Keep at least one reliable network baked so
+the board is always reachable even with an empty `/etc`.
+
 ## Requirements
 
 - `bazel`/`bazelisk` (pinned 7.7.1) — for the targets.

@@ -17,6 +17,20 @@
 # `priority` maps to NetworkManager's connection.autoconnect-priority (higher =
 # preferred). Omit it and networks fall back to list order (earlier = higher).
 #
+# TWO COMPOSABLE LAYERS. NetworkManager loads profiles from two dirs, and this
+# module + the seed tool use one each — they compose by autoconnect-priority and
+# never clobber each other:
+#   baked  — networks declared here → `ensureProfiles` writes them to *ephemeral*
+#            /run/NetworkManager/system-connections and regenerates them from the
+#            config on every boot. This is the always-there base set.
+#   seeded — `deploy/scripts/seed_wifi.sh` (nmcli) writes to *persistent*
+#            /etc/NetworkManager/system-connections, provisioned out of band and
+#            never in git or the store. switch-to-configuration only rewrites
+#            /run, so a redeploy NEVER clobbers seeded networks; add a network in
+#            the field without a rebuild. Seeded profiles are named `seed-<ssid>`.
+# Keep at least one reliable network in the baked layer so the board is always
+# reachable even with an empty /etc.
+#
 # SECURITY: passphrases are written into the NixOS system closure, which lives
 # in the world-readable /nix/store on the device (and in the image). Fine for a
 # home/lab network on a hobby board; for real secret hygiene use NetworkManager's
