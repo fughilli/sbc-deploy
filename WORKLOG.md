@@ -54,13 +54,20 @@ tooling in `fughilli/splanc`. It will be vendored back into splanc once solid.
 - Framework flake + lock resolve; example locks fully against the framework via
   both a local override and the pushed github ref.
 
-### NOT verified / known ceilings
+### Verified on real hardware (Pi 5, 2026-07-31)
 
-- **End-to-end image build: DONE** on the user's Apple-Silicon Mac (2026-07-31)
-  via the sized linux-builder VM — produced a real `*.img.zst`. (On this ~3.8 GB
-  container a full eval still OOM-kills; that's just the container, not the code.)
-- No flashing, **no real-hardware first boot**, no live `deploy_live` switch.
-  WiFi auto-connect (`wifi.nix`) eval-verified but not booted on hardware.
+**Full loop proven end-to-end** on the user's Apple-Silicon Mac + a Pi 5:
+build (sized linux-builder VM) → flash (`image_sd --device`, pv progress) → boot
+→ WiFi auto-connect (from `wifi_config_file`) → mDNS `hello.local` → passwordless
+root SSH via the baked deploy key (`.ssh` target) → `sbc-hello` unit active →
+live redeploy (`deploy_live`: nix build + nix copy + switch-to-configuration)
+switched the running system to a new generation and restarted the app. RPi
+firmware/bootloader + generation install all worked; NTP synced the clock.
+
+### Still not verified / known ceilings
+
+- On this ~3.8 GB container a full nixos eval still OOM-kills (container limit,
+  not the code) — all real builds happen on the host.
 - Only `raspberry-pi-5` exercised; `raspberry-pi-4` untried.
 - The `hello-sbc` app is a placeholder (`python3 -m http.server`).
 
@@ -68,19 +75,17 @@ tooling in `fughilli/splanc`. It will be vendored back into splanc once solid.
 
 ## Next steps (roughly ordered)
 
-1. Build the `hello-sbc` SD image end-to-end on a builder with ≥8 GB RAM /
-   ~25 GB free scratch (or a cache serving the pinned RPi kernel). Prove
-   `bazel run //examples/hello-sbc:hello.image_sd -- --no-write` realizes an
-   `*.img.zst`.
-2. Flash + boot on a real Pi 5: confirm mDNS (`hello.local`), passwordless root
-   SSH via the baked deploy key, and the `sbc-hello` unit runs. Then a live
-   `deploy_live` switch.
-3. Once solid, vendor back into splanc: re-express `pi/provisioning` in terms of
-   `services.sbcApps` (led-driver = realtime + spi module; led-server =
-   bindPrivilegedPorts + stateDirectory) and consume `@sbc_deploy` via
-   `git_override`.
-4. Optional: `raspberry-pi-4` path; AP-mode module (hostapd/dnsmasq seam noted
-   in `sbc-base.nix`); a `deploy_live --dry-run` smoke path in CI (no nix build).
+The core framework is proven end-to-end on hardware (see above). Remaining:
+
+1. **Vendor back into splanc** — the original goal. Re-express `pi/provisioning`
+   in terms of `services.sbcApps` (led-driver = realtime + spi module;
+   led-server = bindPrivilegedPorts + stateDirectory), consume `@sbc_deploy` via
+   `git_override` (Bazel) + `framework=` injection, drop the old bespoke units.
+2. Swap the placeholder for a real app (a Bazel-built binary exported from a
+   flake `packages.<system>`, wired into `services.sbcApps.<name>.package`).
+3. Optional: `raspberry-pi-4` path; AP-mode module (hostapd/dnsmasq seam in
+   `sbc-base.nix`); `.status`/`.logs` convenience targets; secret hygiene for
+   WiFi PSK (NetworkManager `environmentFiles`).
 
 ---
 
