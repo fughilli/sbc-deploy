@@ -46,6 +46,7 @@ _BASH = Label("@nixpkgs_bash//:bash")
 _YJ = Label("@nixpkgs_yj//:yj")
 _ZSTD = Label("@nixpkgs_zstd//:zstd")
 _PV = Label("@nixpkgs_pv//:pv")
+_NIXOS_REBUILD = Label("@nixpkgs_nixos_rebuild//:nixos-rebuild")
 _RUNFILES = Label("@bazel_tools//tools/bash/runfiles:runfiles")
 
 def sbc_application(
@@ -104,22 +105,26 @@ def sbc_application(
 
     # The launcher resolves these runfiles paths, then execs bash on the script.
     # rlocationpath is repo-qualified, so it works from any consumer. Order:
-    # script, bash, wifi-json (or "-"), zstd, pv.
-    lead = [
+    # script, bash, wifi-json (or "-"), zstd, pv, nixos-rebuild (or "-"). Only
+    # deploy_live needs nixos-rebuild, so it's a per-target arg to keep it off
+    # the other targets' dependency closures.
+    base_lead = [
         "$(rlocationpath {})".format(_SCRIPT),
         "$(rlocationpath {})".format(_BASH),
         wifi_lead,
         "$(rlocationpath {})".format(_ZSTD),
         "$(rlocationpath {})".format(_PV),
     ]
-    data = [_SCRIPT, _BASH, _ZSTD, _PV, _RUNFILES] + wifi_data
+    base_data = [_SCRIPT, _BASH, _ZSTD, _PV, _RUNFILES] + wifi_data
 
-    def _target(suffix, argv):
+    def _target(suffix, argv, with_nixos_rebuild = False):
+        nr_lead = "$(rlocationpath {})".format(_NIXOS_REBUILD) if with_nixos_rebuild else "-"
+        nr_data = [_NIXOS_REBUILD] if with_nixos_rebuild else []
         sh_binary(
             name = name + "." + suffix,
             srcs = [_LAUNCHER],
-            data = data,
-            args = lead + argv,
+            data = base_data + nr_data,
+            args = base_lead + [nr_lead] + argv,
             visibility = visibility,
         )
 
@@ -130,7 +135,7 @@ def sbc_application(
     _target("image_sd_base", ["image"] + base + ["--attr", "images.sdImageBase"])
 
     # Mode 3: switch a running board to the full system (app + system deps).
-    _target("deploy_live", ["deploy"] + base + ["--hostname", hostname])
+    _target("deploy_live", ["deploy"] + base + ["--hostname", hostname], with_nixos_rebuild = True)
 
     # Convenience: ssh to the board with the deploy key (default <hostname>.local).
     _target("ssh", ["ssh"] + base + ["--hostname", hostname])
@@ -159,6 +164,7 @@ def sbc_linux_builder(name = "linux_builder", framework = "nix", visibility = No
             "-",  # no wifi config file
             "-",  # no zstd (the builder never flashes)
             "-",  # no pv
+            "-",  # no nixos-rebuild
             "builder",
             "--framework-subdir",
             framework,

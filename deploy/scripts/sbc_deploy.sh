@@ -27,6 +27,7 @@ set -euo pipefail
   echo "sbc-deploy: wifi_config_json=${SBC_WIFI_CONFIG_JSON:-<none>}" >&2
   echo "sbc-deploy: zstd=${SBC_ZSTD:-<none>}" >&2
   echo "sbc-deploy: pv=${SBC_PV:-<none>}" >&2
+  echo "sbc-deploy: nixos_rebuild=${SBC_NIXOS_REBUILD:-<none>}" >&2
 }
 
 # --- config, overridable by flags or environment ---------------------------
@@ -79,7 +80,10 @@ set_builder_args() {
   BUILDER_ARGS=()
   [[ -n "$NIX_BUILDERS" ]] || return 0
   echo "==> Dispatching builds to aarch64-linux builder(s): $NIX_BUILDERS" >&2
-  BUILDER_ARGS=(--max-jobs 0 --builders-use-substitutes --builders "$NIX_BUILDERS")
+  # `--option builders-use-substitutes true` (not the bare flag) so this is
+  # accepted by both `nix build` and `nixos-rebuild` (which rejects unknown
+  # flags).
+  BUILDER_ARGS=(--max-jobs 0 --option builders-use-substitutes true --builders "$NIX_BUILDERS")
 }
 
 # --- resolve paths against the real source tree ----------------------------
@@ -295,7 +299,9 @@ cmd_deploy() {
   [[ -n "$FLAKE_SUBDIR" ]] || die "--flake-subdir not set (the sbc_deploy macro sets this)."
   DEPLOY_HOST="${POSITIONAL[0]:-}"
   [[ -n "$DEPLOY_HOST" ]] || { echo "usage: deploy_live <host-or-ip> [--user root] [nix args]" >&2; exit 2; }
-  command -v nixos-rebuild >/dev/null 2>&1 || die "'nixos-rebuild' not found. Deploy from a host with Nix/NixOS tooling."
+  # Prefer the bundled nixos-rebuild (from the launcher), else PATH.
+  local nixos_rebuild="${SBC_NIXOS_REBUILD:-nixos-rebuild}"
+  command -v "$nixos_rebuild" >/dev/null 2>&1 || die "'nixos-rebuild' not found."
 
   local flake_dir attr target
   flake_dir="$(repo_root)/$FLAKE_SUBDIR"
@@ -314,7 +320,7 @@ cmd_deploy() {
   echo "==> Deploying path:${flake_dir}#${attr} to $target (in-place switch)"
   # On aarch64-darwin, either pass --builder (dispatch the build to a linux
   # builder) or add '-- --build-host <target>' to build on the Pi itself.
-  nixos-rebuild switch \
+  "$nixos_rebuild" switch \
     --flake "path:${flake_dir}#${attr}" \
     --target-host "$target" \
     --use-remote-sudo \

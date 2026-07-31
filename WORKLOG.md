@@ -86,6 +86,24 @@ tooling in `fughilli/splanc`. It will be vendored back into splanc once solid.
 
 ## Log
 
+### 2026-07-31 — bundle nixos-rebuild so deploy_live works on macOS
+
+`deploy_live` failed with `'nixos-rebuild' not found` — it's a NixOS tool absent
+from a stock macOS/Determinate install. Bundled it from nixpkgs
+(`@nixpkgs_nixos_rebuild`, like bash/zstd/pv) as a 6th launcher lead arg →
+`SBC_NIXOS_REBUILD` (PATH fallback). It's per-target: only `deploy_live` carries
+it (others pass the `-` sentinel), so it stays out of image/ssh/keys closures.
+Confirmed from source: the classic nixos-rebuild (25.05 default, not -ng) forwards
+`--override-input` to lockFlags (framework injection works through deploy),
+accepts `--builders`/`--max-jobs`/`--impure`, but REJECTS unknown flags — so
+changed set_builder_args from `--builders-use-substitutes` to the universal
+`--option builders-use-substitutes true`. Its wrapper prepends GNU
+coreutils/sed/grep/jq/util-linux + nix to PATH (`PATH=@path@:$PATH`), so
+`readlink -f` etc. are GNU (macOS-safe) and ssh/nix still resolve. Verified:
+bazel build //... clean; stub test shows deploy assembles `nixos-rebuild switch
+--flake … --target-host root@… --override-input sbc-deploy path:…/nix` and the
+builder flags. Real remote deploy still unverified (no Pi here).
+
 ### 2026-07-31 — ssh convenience target
 
 Added an `ssh` subcommand + `<name>.ssh` macro target: `ssh -i <deploy_key> -o
