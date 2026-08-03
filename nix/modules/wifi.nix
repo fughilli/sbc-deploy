@@ -114,7 +114,8 @@ let
       wifi = {
         mode = "infrastructure";
         ssid = net.ssid;
-      } // lib.optionalAttrs net.hidden { hidden = "true"; };
+      } // lib.optionalAttrs net.hidden { hidden = "true"; }
+        // lib.optionalAttrs (cfg.band != null) { band = cfg.band; };
       ipv4.method = "auto";
       ipv6 = {
         addr-gen-mode = "stable-privacy";
@@ -135,6 +136,19 @@ in
       WiFi networks to auto-connect to on boot, most-preferred first (or set
       per-network `priority`). A single network can also come from
       $SBC_WIFI_SSID / $SBC_WIFI_PSK at build time.
+    '';
+  };
+
+  options.sbcDeploy.wifi.band = lib.mkOption {
+    type = lib.types.nullOr (lib.types.enum [ "bg" "a" ]);
+    default = null;
+    description = ''
+      Lock STA association to a band — "bg" (2.4 GHz) or "a" (5 GHz) — via
+      NetworkManager's `wifi.band`. Default null lets NM pick either. Set "bg"
+      when the board must ALSO host a 2.4 GHz AP on the same radio: single-radio
+      AP+STA is co-channel, so the uplink band dictates the AP's band, and a
+      2.4 GHz-only client (e.g. an ESP32-C6) can only join a 2.4 GHz AP. NB: the
+      chosen SSID must have a BSS on that band or the board won't associate.
     '';
   };
 
