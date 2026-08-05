@@ -6,7 +6,7 @@
 # macro (deploy/defs.bzl); the target bakes in the subcommand + project config
 # via the sh_binary `args`, and the operator appends the rest after `--`:
 #
-#   bazel run //path:NAME.image_sd    -- [--device /dev/sdX] [--no-write] [nix args]
+#   bazel run //path:NAME.image_sd    -- [--device /dev/sdX] [--no-write] [--hostname <name>] [nix args]
 #   bazel run //path:NAME.deploy_live -- <host-or-ip> [--user root] [nix args]
 #   bazel run //path:NAME.keys        -- {init|ensure|rotate|path|pub}
 #
@@ -36,7 +36,7 @@ SUBCMD="${1:-}"
 PROJECT="${SBC_PROJECT:-sbc}"          # name; key comment + messages
 FLAKE_SUBDIR="${SBC_FLAKE_SUBDIR:-}"   # path to the flake dir, relative to repo root
 IMAGE_ATTR="${SBC_IMAGE_ATTR:-images.sdImage}"
-HOSTNAME_ATTR="${SBC_HOSTNAME:-}"      # nixosConfigurations.<attr> for deploy_live
+HOSTNAME_ATTR="${SBC_HOSTNAME:-}"      # deploy/ssh: nixosConfigurations.<attr>; image: hostname baked in
 SECRETS_DIR_OVERRIDE="${SBC_DEPLOY_KEY_DIR:-}"
 
 DEVICE=""
@@ -115,7 +115,7 @@ parse_common_flags() {
       --)                # everything after `--` is forwarded verbatim to nix
                          shift
                          while [[ $# -gt 0 ]]; do EXTRA_ARGS+=("$1"); shift; done ;;
-      -*)                die "unrecognized option '$a'. Recognized: --device <dev>, --no-write, --user <name>, --builder <spec>. To pass flags to nix, put them after a literal '--' (e.g. '-- -- --dry-run')." ;;
+      -*)                die "unrecognized option '$a'. Recognized: --device <dev>, --no-write, --hostname <name>, --user <name>, --builder <spec>. To pass flags to nix, put them after a literal '--' (e.g. '-- -- --dry-run')." ;;
       *)                 POSITIONAL+=("$a"); shift ;;
     esac
   done
@@ -204,6 +204,14 @@ cmd_image() {
   # ssh-deploy.nix reads the pubkey from this absolute path at eval time; --impure
   # lets eval reach it (the key lives outside the flake root on purpose).
   export SBC_DEPLOY_PUBKEY_FILE="$PUB"
+
+  # --hostname overrides the flake's baked-in networking.hostName for this build,
+  # so one config can be flashed onto several boards (e.g. hitl-rig-2). flake.nix
+  # reads $SBC_HOSTNAME_OVERRIDE at eval (--impure); empty => the flake default.
+  if [[ -n "$HOSTNAME_ATTR" ]]; then
+    echo "==> Overriding hostname: $HOSTNAME_ATTR"
+    export SBC_HOSTNAME_OVERRIDE="$HOSTNAME_ATTR"
+  fi
 
   set_builder_args
   set_framework_override
@@ -408,8 +416,8 @@ case "$SUBCMD" in
   ""|-h|--help)
     cat >&2 <<EOF
 sbc-deploy: usage via the Bazel targets created by the sbc_application macro:
-  bazel run //path:NAME.image_sd      -- [--device /dev/sdX] [--no-write] [--builder <spec>]
-  bazel run //path:NAME.image_sd_base -- [--device /dev/sdX] [--no-write]
+  bazel run //path:NAME.image_sd      -- [--device /dev/sdX] [--no-write] [--hostname <name>] [--builder <spec>]
+  bazel run //path:NAME.image_sd_base -- [--device /dev/sdX] [--no-write] [--hostname <name>]
   bazel run //path:NAME.deploy_live   -- <host-or-ip> [--user root] [--builder <spec>]
   bazel run //path:NAME.ssh           -- [host-or-ip] [--user root] [-- <ssh args>]
   bazel run //path:NAME.keys          -- {init|ensure|rotate|path|pub}

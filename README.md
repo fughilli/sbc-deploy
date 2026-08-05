@@ -151,6 +151,20 @@ The write runs under `sudo` (you'll be prompted). Double-check the device — th
 overwrites the whole disk. On macOS the first build/flash pulls `zstd` from the
 cache (tiny).
 
+### Overriding the hostname
+
+The image's `networking.hostName` is baked in from the flake's `hostName`. To
+flash the same config onto more than one board, override it per-build with
+`--hostname` (no flake edit needed):
+
+```sh
+bazel run //path:myboard.image_sd -- --hostname myboard-2 --device /dev/sdX
+```
+
+Nix reads `$SBC_HOSTNAME_OVERRIDE` at eval (`--impure`); the flag sets it. This
+also renames the board's mDNS name to `<name>.local`, so reach it afterwards
+with `... .ssh -- myboard-2.local`.
+
 ## SSH deploy key
 
 The deploy flow owns one ed25519 key pair (see `keys` above):
