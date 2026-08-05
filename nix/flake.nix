@@ -74,7 +74,14 @@
             sbcModules.wifi
 
             {
-              networking.hostName = hostName;
+              # Flash/deploy one config onto several boards without editing the
+              # flake: $SBC_HOSTNAME_OVERRIDE (read under `nix build --impure`;
+              # set by the deploy script's `--hostname` flag) wins over the
+              # baked-in hostName when non-empty. Same getEnv-at-eval seam as
+              # wifi.nix / ssh-deploy.nix; empty (incl. pure eval) => hostName.
+              networking.hostName =
+                let override = builtins.getEnv "SBC_HOSTNAME_OVERRIDE";
+                in if override != "" then override else hostName;
               system.stateVersion = stateVersion;
             }
           ] ++ modules;

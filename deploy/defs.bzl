@@ -18,9 +18,12 @@ Usage (in a consumer BUILD.bazel):
 This creates targets for the three deployment modes (+ key management):
 
     # Mode 1 — full system image (minimal system + your bundled application):
-    bazel run //consumer:myboard.image_sd      -- [--device /dev/sdX] [--no-write]
+    bazel run //consumer:myboard.image_sd      -- [--device /dev/sdX] [--no-write] [--hostname <name>]
     # Mode 2 — base system image only (networking, no application):
-    bazel run //consumer:myboard.image_sd_base -- [--device /dev/sdX] [--no-write]
+    bazel run //consumer:myboard.image_sd_base -- [--device /dev/sdX] [--no-write] [--hostname <name>]
+
+    # --hostname overrides the baked-in networking.hostName for this build, so
+    # one config can be flashed onto several boards (e.g. myboard-2).
     # Mode 3 — push the application (+ its system deps) to a running board:
     bazel run //consumer:myboard.deploy_live   -- <host-or-ip> [--user root]
 
