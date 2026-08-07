@@ -303,19 +303,48 @@ execute on macOS — so a Mac cannot build them locally. You'll see:
 error: a 'aarch64-linux' with features {} is required to build '…', but I am a 'aarch64-darwin'
 ```
 
-There are two ways to get `aarch64-linux` outputs from a non-`aarch64-linux`
-host, with a speed/setup trade-off:
+**The default just works — no flags, no config.** On macOS the build targets
+*auto-manage* a sized `aarch64-linux` builder VM for you:
 
-- **Dispatch to a native `aarch64-linux` builder** (Options A/B below) — same CPU
-  arch, so it runs at full speed with **full binary-cache hits**. Needs a
-  builder VM or a remote box.
+```sh
+bazel run //examples/hello-sbc:hello.image_sd -- --no-write
+```
+
+On demand it boots the VM (only when something actually needs building — a
+fully-cached re-run touches no builder at all), dispatches the build, copies the
+result into your local `/nix/store`, and shuts the VM down afterwards. It's
+fully zero-conf: **no `sudo`, no `/etc/nix` changes**. It boots the packaged
+`darwin.linux-builder` with its own SSH key under `~/.config/sbc-deploy` (which
+lets it skip the credential-sync step that would otherwise need root), and
+dispatches with an inline `--builders` spec — so you only need to be a Nix
+trusted user (the default on a Determinate install). Add `--keep-builder`
+(or `SBC_KEEP_BUILDER=1`) to leave the VM running for fast iteration.
+
+The VM's disk is **ephemeral by default** — it's scratch (your local
+`/nix/store` holds the real results), and a qcow2 accumulates the whole
+substituted closure (10–20 GB) without shrinking on GC, so it's deleted when the
+managed VM stops. To keep it — trading disk for faster cold builds, since the
+builder's store then persists — set `SBC_BUILDER_DISK=/path/to/builder.qcow2`
+(point it at a roomy volume); `--keep-builder` likewise keeps it while the VM
+stays up.
+
+Because it's a *native* `aarch64-linux` builder, almost the entire closure comes
+from the binary caches as substitutes — only the config-specific derivations are
+actually built, and those are GC-rooted (see [below](#genuinely-cached-re-runs)),
+so an unchanged re-run rebuilds nothing and needs no builder.
+
+The rest of this section covers the manual alternatives, for when you want to run
+your own builder, use a remote box, or cross-compile. The trade-off:
+
+- **Dispatch to a native `aarch64-linux` builder** (the auto-managed default, or
+  Options A/B below) — same CPU arch, so full speed with **full binary-cache
+  hits**.
 - **Cross-compile locally** (Option C) — no builder at all, but the binary caches
   only hold *native* `aarch64-linux`, so a cross build gets **no cache hits and
-  rebuilds the world from source** (including the RPi kernel). Simplest to set
-  up; slowest first build.
-
-Use a builder when you can; reach for `--cross` when you can't (or won't) run
-one.
+  rebuilds the world from source** (including the RPi kernel). Slowest first
+  build, and it does **not** work on macOS for a full system (some build steps,
+  e.g. NetworkManager's introspection, must *run* Linux binaries) — use it on an
+  `x86_64-linux` host.
 
 **Option A — local Linux builder VM.** A NixOS VM that registers as an
 `aarch64-linux` builder. Do the one-time config once, then start a VM.
@@ -433,6 +462,19 @@ you can set `SBC_CROSS=1` to make it the default without the flag.
 At the library level the same switch is `mkSbcProject { …; buildPlatform =
 "aarch64-darwin"; }` (or `mkSbcSystem`), for consumers assembling a system
 directly; `null` (the default) defers to the `--cross` / `SBC_CROSS` env seam.
+
+### Genuinely cached re-runs
+
+Re-running a build you've already done should rebuild nothing and not touch the
+builder. The config-specific derivations (the image, your app,
+`root-authorized_keys`, the systemd/NetworkManager units) are in *no* binary
+cache, so if they aren't kept locally, each re-run rebuilds them on the builder.
+The image targets therefore keep a **GC root** (`--out-link` under a gitignored
+`.sbc-build/`), which pins the whole closure so Nix garbage collection (which
+runs aggressively on Determinate) can't reap it. Result: after the first build,
+an unchanged re-run finishes in seconds, entirely from your local store, with the
+builder shut down. (The auto-managed backend also runs a quick `--dry-run` first
+and only boots the VM if something genuinely needs building.)
 
 ### Persisting the build cache (so you can stop the builder)
 
