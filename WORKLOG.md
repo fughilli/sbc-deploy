@@ -70,6 +70,9 @@ firmware/bootloader + generation install all worked; NTP synced the clock.
   not the code) — all real builds happen on the host.
 - Only `raspberry-pi-5` exercised; `raspberry-pi-4` untried.
 - The `hello-sbc` app is a placeholder (`python3 -m http.server`).
+- `--cross` (FUG-86) is wired but not eval-verified end-to-end — see the
+  2026-08-07 log entry for the exact gap (does upstream honour
+  `nixpkgs.buildPlatform`?).
 
 ---
 
@@ -90,6 +93,35 @@ The core framework is proven end-to-end on hardware (see above). Remaining:
 ---
 
 ## Log
+
+### 2026-08-07 — cross-building (FUG-86): build aarch64-linux on macOS / x86_64-linux
+
+Added an opt-in cross path so a non-`aarch64-linux` host can realize the image
+itself, with no builder VM/box. The board module fixes the system's
+`hostPlatform` to `aarch64-linux`; the new cross seam in `mkSbcSystem` sets
+`nixpkgs.buildPlatform` to a *different* platform, which flips nixpkgs into
+cross-compilation. Resolution order: an explicit `buildPlatform` arg on
+`mkSbcSystem`/`mkSbcProject`, then `$SBC_BUILD_PLATFORM`, then `$SBC_CROSS` =>
+`builtins.currentSystem` — same getEnv-at-eval seam (`--impure`) as
+hostname/wifi/pubkey, inert (`mkIf false`) in the native path so the
+aarch64-on-aarch64 build is unchanged. `sbc_deploy.sh` gained a `--cross` flag
+(+ `SBC_CROSS` env) on `image`/`deploy`: it exports `SBC_CROSS`, is mutually
+exclusive with `--builder` (dispatching vs. cross are the two alternatives; also
+`--max-jobs 0` would forbid the local cross build), and prints the
+rebuild-from-source warning. No macro change — `--cross` rides the existing flag
+parser. README "Building on Apple Silicon" now frames it as builder-vs-cross and
+documents Option C; Requirements updated.
+
+Trade-off (documented, not a defect): cross artifacts aren't in the binary
+cache, so a cross build rebuilds the world from source, incl. the RPi kernel —
+needs ample host RAM/disk. **Verification ceiling:** no `nix` in this worktree,
+so verified by review + bash logic tests only (`bash -n` clean; `set_cross_env`
+exercised — native no-op, cross exports `SBC_CROSS`, `--cross`+`--builder`
+dies). Not eval-verified: whether upstream `nixos-raspberrypi` honours
+`nixpkgs.buildPlatform` (it would not if it pins a pre-instantiated
+`nixpkgs.pkgs`) — the standard NixOS cross seam assumes it doesn't. Next agent
+with `nix` on macOS/x86_64-linux: `… -- --no-write --cross` and confirm eval
+enters cross mode (`pkgsCross`) rather than erroring on the platform option.
 
 ### 2026-07-31 — isolate nix extension usages (reusability fix)
 

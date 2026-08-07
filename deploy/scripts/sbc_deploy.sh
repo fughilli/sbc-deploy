@@ -48,6 +48,12 @@ DEPLOY_HOST=""
 # a native aarch64-linux builder. Space/semicolon-separated nix `--builders`
 # spec; see the README "Building on Apple Silicon".
 NIX_BUILDERS="${SBC_NIX_BUILDERS:-}"
+# Cross-compile the aarch64-linux closure on THIS host instead of dispatching to
+# a native aarch64-linux builder — so macOS / x86_64-linux need no builder VM or
+# remote box. Set by --cross or SBC_CROSS; optionally pin the build platform with
+# SBC_BUILD_PLATFORM. Trade-off: cross artifacts aren't in the binary cache, so
+# this rebuilds from source (incl. the RPi kernel). See the README.
+CROSS="${SBC_CROSS:-}"
 # Workspace-relative path to sbc-deploy's own nix/ flake dir, when it lives in
 # the same source tree (in-repo example, or vendored in-tree). When set, builds
 # inject it via `--override-input sbc-deploy path:…` so Bazel is the single
@@ -85,6 +91,22 @@ set_builder_args() {
   BUILDER_ARGS=(--max-jobs 0 --option builders-use-substitutes true --builders "$NIX_BUILDERS")
 }
 
+# When --cross / SBC_CROSS is set, export SBC_CROSS so the flake's cross seam
+# (read under --impure) pins nixpkgs.buildPlatform to this host and cross-compiles
+# the aarch64-linux closure locally — no aarch64-linux builder needed. Mutually
+# exclusive with --builder: dispatching to a native builder is the *alternative*
+# to cross-compiling, and --max-jobs 0 would forbid the local cross build.
+set_cross_env() {
+  [[ -n "$CROSS" ]] || return 0
+  if [[ -n "$NIX_BUILDERS" ]]; then
+    die "--cross and --builder are mutually exclusive: --cross builds the aarch64-linux closure on this host, --builder dispatches it to a native aarch64-linux builder. Pick one."
+  fi
+  export SBC_CROSS=1
+  echo "==> Cross-compiling the aarch64-linux closure on $(uname -sm) (no aarch64-linux builder)." >&2
+  echo "    Note: cross artifacts aren't in the binary cache, so this rebuilds from source" >&2
+  echo "    (including the RPi kernel). Give the host ample RAM/disk; expect a long first build." >&2
+}
+
 # --- resolve paths against the real source tree ----------------------------
 repo_root() {
   if [[ -n "${BUILD_WORKSPACE_DIRECTORY:-}" ]]; then
@@ -112,10 +134,11 @@ parse_common_flags() {
       --user)            DEPLOY_USER="$2"; shift 2 ;;
       --builder)         # append; nix separates multiple builders with ';'
                          NIX_BUILDERS="${NIX_BUILDERS:+$NIX_BUILDERS ; }$2"; shift 2 ;;
+      --cross)           CROSS=1; shift ;;
       --)                # everything after `--` is forwarded verbatim to nix
                          shift
                          while [[ $# -gt 0 ]]; do EXTRA_ARGS+=("$1"); shift; done ;;
-      -*)                die "unrecognized option '$a'. Recognized: --device <dev>, --no-write, --hostname <name>, --user <name>, --builder <spec>. To pass flags to nix, put them after a literal '--' (e.g. '-- -- --dry-run')." ;;
+      -*)                die "unrecognized option '$a'. Recognized: --device <dev>, --no-write, --hostname <name>, --user <name>, --builder <spec>, --cross. To pass flags to nix, put them after a literal '--' (e.g. '-- -- --dry-run')." ;;
       *)                 POSITIONAL+=("$a"); shift ;;
     esac
   done
@@ -214,6 +237,7 @@ cmd_image() {
   fi
 
   set_builder_args
+  set_cross_env
   set_framework_override
 
   echo "==> Building SD image: path:${flake_dir}#${IMAGE_ATTR}"
@@ -326,6 +350,7 @@ cmd_deploy() {
   export SBC_DEPLOY_PUBKEY_FILE="$PUB"     # baked into the config at eval (--impure)
 
   set_builder_args
+  set_cross_env
   set_framework_override
 
   # 1. Build the system closure (aarch64-linux; goes to the linux builder).
@@ -416,15 +441,17 @@ case "$SUBCMD" in
   ""|-h|--help)
     cat >&2 <<EOF
 sbc-deploy: usage via the Bazel targets created by the sbc_application macro:
-  bazel run //path:NAME.image_sd      -- [--device /dev/sdX] [--no-write] [--hostname <name>] [--builder <spec>]
-  bazel run //path:NAME.image_sd_base -- [--device /dev/sdX] [--no-write] [--hostname <name>]
-  bazel run //path:NAME.deploy_live   -- <host-or-ip> [--user root] [--builder <spec>]
+  bazel run //path:NAME.image_sd      -- [--device /dev/sdX] [--no-write] [--hostname <name>] [--builder <spec> | --cross]
+  bazel run //path:NAME.image_sd_base -- [--device /dev/sdX] [--no-write] [--hostname <name>] [--builder <spec> | --cross]
+  bazel run //path:NAME.deploy_live   -- <host-or-ip> [--user root] [--builder <spec> | --cross]
   bazel run //path:NAME.ssh           -- [host-or-ip] [--user root] [-- <ssh args>]
   bazel run //path:NAME.keys          -- {init|ensure|rotate|path|pub}
 
-On aarch64-darwin (Apple Silicon) an image can't be built locally; run the
-linux-builder VM target, or pass --builder (a nix --builders spec) /
-SBC_NIX_BUILDERS. See the README "Building on Apple Silicon".
+On aarch64-darwin (Apple Silicon) an image can't be built natively; either
+dispatch to a native aarch64-linux builder (the linux-builder VM target, or
+--builder / SBC_NIX_BUILDERS), or cross-compile it on this host with --cross
+(SBC_CROSS) — no builder needed, but it rebuilds from source. Also applies to
+x86_64-linux hosts. See the README "Building on Apple Silicon".
 EOF
     exit 2 ;;
   *) die "unknown subcommand '$SUBCMD' (expected image|deploy|ssh|keys|builder|cache)" ;;

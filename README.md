@@ -288,9 +288,11 @@ the board is always reachable even with an empty `/etc`.
 - `nix` with flakes — required in all cases: building any deploy target realizes
   the hermetic bash from Nix, and the targets drive `nix` to build an image or
   to build/copy/activate a system for deploy. `ssh` for deploy/ssh targets.
-- An `aarch64-linux` builder for image builds, with enough RAM/disk to compile
-  the RPi kernel when it isn't cache-served. On a Linux host this is just the
-  host itself; on macOS see below.
+- A way to produce `aarch64-linux` outputs, with enough RAM/disk to compile the
+  RPi kernel when it isn't cache-served. On an `aarch64-linux` host this is just
+  the host itself. On macOS or `x86_64-linux`, either dispatch to a native
+  `aarch64-linux` builder (cache-served, fast) or cross-compile on the host with
+  `--cross` (no builder, but rebuilds from source) — see below.
 
 ## Building on Apple Silicon (aarch64-darwin)
 
@@ -301,10 +303,19 @@ execute on macOS — so a Mac cannot build them locally. You'll see:
 error: a 'aarch64-linux' with features {} is required to build '…', but I am a 'aarch64-darwin'
 ```
 
-Cross-compiling the whole closure (Darwin → Linux) isn't practical — the binary
-caches only have *native* `aarch64-linux`, so a cross build would rebuild the
-world from source. Instead, dispatch the build to a **native `aarch64-linux`
-builder**: same CPU arch, so it runs at full speed with full cache hits.
+There are two ways to get `aarch64-linux` outputs from a non-`aarch64-linux`
+host, with a speed/setup trade-off:
+
+- **Dispatch to a native `aarch64-linux` builder** (Options A/B below) — same CPU
+  arch, so it runs at full speed with **full binary-cache hits**. Needs a
+  builder VM or a remote box.
+- **Cross-compile locally** (Option C) — no builder at all, but the binary caches
+  only hold *native* `aarch64-linux`, so a cross build gets **no cache hits and
+  rebuilds the world from source** (including the RPi kernel). Simplest to set
+  up; slowest first build.
+
+Use a builder when you can; reach for `--cross` when you can't (or won't) run
+one.
 
 **Option A — local Linux builder VM.** A NixOS VM that registers as an
 `aarch64-linux` builder. Do the one-time config once, then start a VM.
@@ -400,6 +411,28 @@ this rev, so the builder compiles it once — give it ≥8 GB RAM and ~25 GB fre
 
 For `deploy_live`, the same `--builder` applies; alternatively add
 `-- --build-host <pi>` to build directly on the target board.
+
+**Option C — cross-compile locally, no builder.** Build the `aarch64-linux`
+closure right on the host (macOS *or* `x86_64-linux`) with a Nix cross toolchain.
+The board module fixes the system's `hostPlatform` to `aarch64-linux`; passing
+`--cross` pins `nixpkgs.buildPlatform` to your host, which flips nixpkgs into
+cross-compilation so the host realizes the closure itself:
+
+```sh
+bazel run //examples/hello-sbc:hello.image_sd -- --no-write --cross
+```
+
+No VM, no remote box, no one-time Nix config. The catch is caching: the binary
+caches only have *native* `aarch64-linux`, so the cross build gets **no cache
+hits and rebuilds from source** — including the RPi kernel. Give the host ample
+RAM and disk (≥8 GB / ~25 GB free) and expect a long first build; subsequent
+builds reuse your local store. `--cross` and `--builder` are mutually exclusive
+(they're the two alternatives). It applies to `deploy_live` the same way, and
+you can set `SBC_CROSS=1` to make it the default without the flag.
+
+At the library level the same switch is `mkSbcProject { …; buildPlatform =
+"aarch64-darwin"; }` (or `mkSbcSystem`), for consumers assembling a system
+directly; `null` (the default) defers to the `--cross` / `SBC_CROSS` env seam.
 
 ### Persisting the build cache (so you can stop the builder)
 
