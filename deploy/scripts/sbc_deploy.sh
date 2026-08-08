@@ -48,6 +48,12 @@ DEPLOY_HOST=""
 # a native aarch64-linux builder. Space/semicolon-separated nix `--builders`
 # spec; see the README "Building on Apple Silicon".
 NIX_BUILDERS="${SBC_NIX_BUILDERS:-}"
+# Cross-compile the aarch64-linux closure on THIS host instead of dispatching to
+# a native aarch64-linux builder — so macOS / x86_64-linux need no builder VM or
+# remote box. Set by --cross or SBC_CROSS; optionally pin the build platform with
+# SBC_BUILD_PLATFORM. Trade-off: cross artifacts aren't in the binary cache, so
+# this rebuilds from source (incl. the RPi kernel). See the README.
+CROSS="${SBC_CROSS:-}"
 # Workspace-relative path to sbc-deploy's own nix/ flake dir, when it lives in
 # the same source tree (in-repo example, or vendored in-tree). When set, builds
 # inject it via `--override-input sbc-deploy path:…` so Bazel is the single
@@ -85,6 +91,208 @@ set_builder_args() {
   BUILDER_ARGS=(--max-jobs 0 --option builders-use-substitutes true --builders "$NIX_BUILDERS")
 }
 
+# When --cross / SBC_CROSS is set, export SBC_CROSS so the flake's cross seam
+# (read under --impure) pins nixpkgs.buildPlatform to this host and cross-compiles
+# the aarch64-linux closure locally — no aarch64-linux builder needed. Mutually
+# exclusive with --builder: dispatching to a native builder is the *alternative*
+# to cross-compiling, and --max-jobs 0 would forbid the local cross build.
+set_cross_env() {
+  [[ -n "$CROSS" ]] || return 0
+  if [[ -n "$NIX_BUILDERS" ]]; then
+    die "--cross and --builder are mutually exclusive: --cross builds the aarch64-linux closure on this host, --builder dispatches it to a native aarch64-linux builder. Pick one."
+  fi
+  export SBC_CROSS=1
+  echo "==> Cross-compiling the aarch64-linux closure on $(uname -sm) (no aarch64-linux builder)." >&2
+  echo "    Note: cross artifacts aren't in the binary cache, so this rebuilds from source" >&2
+  echo "    (including the RPi kernel). Give the host ample RAM/disk; expect a long first build." >&2
+}
+
+# --- auto-managed linux-builder (macOS) ------------------------------------
+# On Apple Silicon the host can't build the aarch64-linux image locally, so the
+# default (no --cross / no --builder) is to manage the sized builder VM
+# automatically: boot it on demand, dispatch the build, and shut it down after.
+# It boots the packaged darwin.linux-builder's `run-builder` directly with an
+# sbc-deploy-owned SSH key ($KEYS), which SKIPS create-builder's credential sync
+# — that sync is the only part that needs `sudo` (it rewrites /etc/nix). So this
+# is fully zero-conf: no sudo, no /etc/nix changes. Built outputs are copied back
+# into the local /nix/store as usual (and rooted via gc_root_link, so re-runs are
+# cached and don't need the builder at all).
+BUILDER_STARTED=0
+MANAGED_QEMU_PID=""
+KEEP_BUILDER="${SBC_KEEP_BUILDER:-0}"
+BUILDER_PORT=31022
+BUILDER_HOSTKEY_B64=""
+BUILDER_KEYS_DIR="${SBC_BUILDER_KEYS_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/sbc-deploy/builder-keys}"
+# Path for the VM's disk (qcow2). run-nixos-vm defaults this to ./nixos.qcow2 in
+# the CWD, which would scatter a large image into the repo. The builder is pure
+# scratch (your local /nix/store is the authoritative cache — everything is copied
+# back), and a qcow2 accumulates the whole substituted closure (10–20 GB) without
+# shrinking on GC, so by DEFAULT the disk is EPHEMERAL: created under the cache dir
+# and deleted when the auto-managed VM stops. Set SBC_BUILDER_DISK to a fixed path
+# to keep it instead (persists the builder store for faster cold builds, at the
+# cost of that disk space — e.g. point it at a roomy volume). --keep-builder also
+# keeps the disk (the VM stays up).
+if [[ -n "${SBC_BUILDER_DISK:-}" ]]; then
+  BUILDER_DISK="$SBC_BUILDER_DISK"; BUILDER_DISK_EPHEMERAL=0
+else
+  BUILDER_DISK="${XDG_CACHE_HOME:-$HOME/.cache}/sbc-deploy/builder.qcow2"; BUILDER_DISK_EPHEMERAL=1
+fi
+_builder_key() { echo "$BUILDER_KEYS_DIR/builder_ed25519"; }
+
+# Generate the sbc-deploy builder keypair once (no sudo). The VM authorizes this
+# key at boot (via the KEYS virtfs mount); the nix daemon connects with it.
+ensure_builder_key() {
+  local key; key="$(_builder_key)"
+  [[ -f "$key" && -f "$key.pub" ]] && return 0
+  mkdir -p "$BUILDER_KEYS_DIR"; chmod 700 "$BUILDER_KEYS_DIR"
+  echo "==> Generating sbc-deploy builder key (one-time, no sudo): $key" >&2
+  rm -f "$key" "$key.pub"
+  ssh-keygen -q -t ed25519 -N "" -C "sbc-deploy-builder" -f "$key"
+}
+
+builder_port_open() { nc -z -G1 localhost "$BUILDER_PORT" >/dev/null 2>&1; }
+
+# SSH to the builder with our key; succeeds only if the running VM authorizes it.
+# On success, captures the VM's host key (base64) into BUILDER_HOSTKEY_B64 for
+# the inline --builders spec.
+builder_probe_ourkey() {
+  local kh; kh="$(mktemp)"
+  if ssh -i "$(_builder_key)" -p "$BUILDER_PORT" \
+        -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new \
+        -o UserKnownHostsFile="$kh" -o ConnectTimeout=5 -o BatchMode=yes \
+        builder@localhost true >/dev/null 2>&1; then
+    BUILDER_HOSTKEY_B64="$(awk '{print $2, $3}' "$kh" | base64 | tr -d '\n')"
+    rm -f "$kh"; return 0
+  fi
+  rm -f "$kh"; return 1
+}
+
+# Boot the sized VM in the background with our key. Needs the framework in-tree
+# (--framework-subdir), which supplies nix/builder. Returns non-zero if it can't.
+start_managed_builder() {
+  [[ -n "$FRAMEWORK_SUBDIR" ]] || return 1
+  local bflake; bflake="$(repo_root)/${FRAMEWORK_SUBDIR%/}/builder"
+  [[ -f "$bflake/flake.nix" ]] || return 1
+  # Extract run-builder (the boot half of create-builder) so we can boot with our
+  # own $KEYS and skip add-keys' sudo credential sync.
+  local installer runb
+  installer="$(nix build --no-link --print-out-paths "path:${bflake}#linux-builder" 2>/dev/null | tail -n1)" || return 1
+  [[ -n "$installer" ]] || return 1
+  runb="$(grep -oE '/nix/store/[a-z0-9]+-run-builder/bin/run-builder' "$installer/bin/create-builder" | head -n1)"
+  [[ -n "$runb" ]] || return 1
+  echo "==> Starting auto-managed linux-builder VM (will stop when done; --keep-builder to keep)…" >&2
+  local log; log="$(repo_root)/.sbc-build/builder.log"; mkdir -p "$(dirname "$log")"
+  mkdir -p "$(dirname "$BUILDER_DISK")"
+  # KEYS: our key the VM authorizes; NIX_DISK_IMAGE: stable persistent disk (not
+  # ./nixos.qcow2 in the CWD). run-nixos-vm cd's to a tmpdir for everything else.
+  KEYS="$BUILDER_KEYS_DIR" NIX_DISK_IMAGE="$BUILDER_DISK" nohup "$runb" >"$log" 2>&1 &
+  local i
+  for i in $(seq 1 180); do builder_port_open && break; sleep 1; done
+  builder_port_open || { echo "ERROR: builder VM did not come up on :$BUILDER_PORT (see $log)." >&2; return 1; }
+  MANAGED_QEMU_PID="$(pgrep -f "qemu-system-aarch64.*hostfwd=tcp::${BUILDER_PORT}-" | head -n1)"
+  BUILDER_STARTED=1
+}
+
+# Shut down a builder VM we started (no-op if we didn't, or if --keep-builder).
+# Wired to EXIT so it runs on any exit path.
+stop_managed_builder() {
+  [[ "$BUILDER_STARTED" == 1 ]] || return 0
+  if [[ "$KEEP_BUILDER" == 1 ]]; then
+    echo "==> Leaving builder VM running (--keep-builder). Stop it later with: pkill -f 'hostfwd=tcp::${BUILDER_PORT}-'" >&2
+    return 0
+  fi
+  echo "==> Stopping auto-managed builder VM…" >&2
+  if [[ -n "$MANAGED_QEMU_PID" ]]; then kill "$MANAGED_QEMU_PID" 2>/dev/null || true
+  else pkill -f "qemu-system-aarch64.*hostfwd=tcp::${BUILDER_PORT}-" 2>/dev/null || true; fi
+  BUILDER_STARTED=0
+  # Reclaim the scratch disk (qcow2 doesn't shrink on in-VM GC). Kept only if the
+  # user pinned a fixed SBC_BUILDER_DISK. Give qemu a moment to release the file.
+  if [[ "${BUILDER_DISK_EPHEMERAL:-0}" == 1 && -f "$BUILDER_DISK" ]]; then
+    sleep 1
+    rm -f "$BUILDER_DISK" && echo "==> Reclaimed ephemeral builder disk (set SBC_BUILDER_DISK to keep it)." >&2
+  fi
+}
+
+# Wait until the builder actually answers SSH auth with our key (sshd readiness
+# lags the port opening at boot), capturing the host key en route. Returns 0 once
+# ready, 1 on timeout. This is what avoids the race where we dispatch before the
+# VM can authenticate.
+wait_builder_ready() {
+  local secs="${1:-90}" i
+  for i in $(seq 1 "$secs"); do
+    builder_probe_ourkey && return 0
+    sleep 1
+  done
+  return 1
+}
+
+_set_managed_builder_args() {
+  BUILDER_ARGS=(--max-jobs 0 --option builders-use-substitutes true \
+    --builders "ssh-ng://builder@linux-builder aarch64-linux $(_builder_key) 6 - big-parallel,kvm,benchmark - $BUILDER_HOSTKEY_B64")
+  echo "==> Using auto-managed aarch64-linux builder VM." >&2
+}
+
+# macOS default backend: ensure a builder VM that accepts our key is up, then
+# point BUILDER_ARGS at it. If a builder is already up but doesn't accept our key
+# (e.g. one the user started by hand), defer to the globally-configured builders.
+ensure_managed_builder() {
+  [[ "$(uname -s)" == "Darwin" ]] || return 0
+  ensure_builder_key
+  trap stop_managed_builder EXIT   # no-op unless we start one below
+  if builder_port_open; then
+    # Something's already listening. Give it a short window to accept our key
+    # (it might be one we left running); otherwise defer to global config.
+    if wait_builder_ready 10; then _set_managed_builder_args; return 0; fi
+    echo "==> A builder on :$BUILDER_PORT doesn't accept the sbc-deploy key; using globally-configured builders." >&2
+    return 0
+  fi
+  start_managed_builder || {
+    echo "==> Could not auto-start a builder; deferring to globally-configured builders." >&2
+    echo "    (Auto-start needs the framework in-tree via --framework-subdir; or start //:linux_builder, or pass --builder/--cross.)" >&2
+    return 0
+  }
+  # Our VM's port is up; now wait for sshd to accept our key before dispatching.
+  if wait_builder_ready 90; then
+    _set_managed_builder_args
+  else
+    echo "ERROR: builder VM booted but SSH with the sbc-deploy key never became ready (see .sbc-build/builder.log)." >&2
+  fi
+}
+
+# Does realising this flake ref actually require building anything (vs. being
+# fully cached or substitutable)? A `--dry-run` plans without building; "will be
+# built" means real work — the only case that needs a builder. "will be fetched"
+# (substitutes) and an empty plan do not. Cheap (a few seconds of eval), and it's
+# what lets a cached re-run skip the builder VM entirely.
+needs_realisation() {
+  local ref="$1" out
+  # Capture then glob-match rather than pipe to `grep -q`: under `set -o
+  # pipefail`, grep -q closes the pipe on first match, nix gets SIGPIPE (exit
+  # 141), and the pipeline is reported as failed — which made this flakily return
+  # "nothing to build" even when there was.
+  out="$(nix build --dry-run \
+    ${FRAMEWORK_ARGS[@]+"${FRAMEWORK_ARGS[@]}"} \
+    ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
+    --impure "$ref" 2>&1)" || true
+  [[ "$out" == *"will be built"* ]]
+}
+
+# Choose the build backend for realising $1 (a flake ref). Explicit --cross or
+# --builder win. Otherwise, on macOS, auto-manage the sized VM — but only spin it
+# up when a build is actually needed, so fully-cached re-runs stay builder-free.
+prepare_backend() {
+  local ref="$1"
+  set_framework_override
+  if [[ -n "$CROSS" ]]; then set_cross_env; return 0; fi
+  if [[ -n "$NIX_BUILDERS" ]]; then set_builder_args; return 0; fi
+  [[ "$(uname -s)" == "Darwin" ]] || return 0
+  if needs_realisation "$ref"; then
+    ensure_managed_builder
+  else
+    echo "==> Fully cached — nothing to build, no builder needed." >&2
+  fi
+}
+
 # --- resolve paths against the real source tree ----------------------------
 repo_root() {
   if [[ -n "${BUILD_WORKSPACE_DIRECTORY:-}" ]]; then
@@ -112,10 +320,12 @@ parse_common_flags() {
       --user)            DEPLOY_USER="$2"; shift 2 ;;
       --builder)         # append; nix separates multiple builders with ';'
                          NIX_BUILDERS="${NIX_BUILDERS:+$NIX_BUILDERS ; }$2"; shift 2 ;;
+      --cross)           CROSS=1; shift ;;
+      --keep-builder)    KEEP_BUILDER=1; shift ;;
       --)                # everything after `--` is forwarded verbatim to nix
                          shift
                          while [[ $# -gt 0 ]]; do EXTRA_ARGS+=("$1"); shift; done ;;
-      -*)                die "unrecognized option '$a'. Recognized: --device <dev>, --no-write, --hostname <name>, --user <name>, --builder <spec>. To pass flags to nix, put them after a literal '--' (e.g. '-- -- --dry-run')." ;;
+      -*)                die "unrecognized option '$a'. Recognized: --device <dev>, --no-write, --hostname <name>, --user <name>, --builder <spec>, --cross, --keep-builder. To pass flags to nix, put them after a literal '--' (e.g. '-- -- --dry-run')." ;;
       *)                 POSITIONAL+=("$a"); shift ;;
     esac
   done
@@ -131,6 +341,21 @@ secrets_dir() {
     # keeps the private half from ever being copied into /nix/store.
     echo "$(repo_root)/${FLAKE_SUBDIR%/}/../secrets"
   fi
+}
+
+# Path for a persistent GC-root out-link, under a gitignored dir in the source
+# tree. Rooting a build's output keeps its WHOLE closure alive through Nix
+# garbage collection — crucially the config-specific derivations (the image, the
+# app, root-authorized_keys, the systemd/NetworkManager units) that live in NO
+# binary cache. Without a root (`--no-link`) those outputs are unrooted, Nix's GC
+# (aggressive under Determinate) reaps them, and every "already built" re-run has
+# to rebuild them on the linux builder. With the root, an unchanged re-run
+# rebuilds nothing and doesn't touch the builder at all. Name is per project+attr
+# so distinct targets (image_sd vs image_sd_base) don't clobber each other.
+gc_root_link() {
+  local dir; dir="$(repo_root)/.sbc-build"
+  mkdir -p "$dir"
+  echo "$dir/${PROJECT}.$(printf '%s' "$1" | tr '/.' '__')"
 }
 
 # ---------------------------------------------------------------------------
@@ -213,19 +438,19 @@ cmd_image() {
     export SBC_HOSTNAME_OVERRIDE="$HOSTNAME_ATTR"
   fi
 
-  set_builder_args
-  set_framework_override
+  prepare_backend "path:${flake_dir}#${IMAGE_ATTR}"
 
   echo "==> Building SD image: path:${flake_dir}#${IMAGE_ATTR}"
   # Capture the store output path from --print-out-paths (stdout); build progress
   # stays on stderr. Avoids `readlink -f`, which BSD/macOS doesn't support.
   # ${arr[@]+…} guards the empty-array-under-`set -u` case on bash 3.2 (macOS).
-  local out img
+  local out img gclink
+  gclink="$(gc_root_link "$IMAGE_ATTR")"
   out="$(nix build \
     ${FRAMEWORK_ARGS[@]+"${FRAMEWORK_ARGS[@]}"} \
     ${BUILDER_ARGS[@]+"${BUILDER_ARGS[@]}"} \
     ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
-    --impure --no-link --print-out-paths \
+    --impure --out-link "$gclink" --print-out-paths \
     "path:${flake_dir}#${IMAGE_ATTR}" | tail -n1)"
   [[ -n "$out" ]] || die "nix build produced no output path."
   # The output is a DIRECTORY (itself named …img.zst); the actual image is a file
@@ -325,17 +550,17 @@ cmd_deploy() {
   export NIX_SSHOPTS="$ssh_opts"          # used by `nix copy` over ssh-ng
   export SBC_DEPLOY_PUBKEY_FILE="$PUB"     # baked into the config at eval (--impure)
 
-  set_builder_args
-  set_framework_override
+  prepare_backend "path:${flake_dir}#nixosConfigurations.${attr}.config.system.build.toplevel"
 
   # 1. Build the system closure (aarch64-linux; goes to the linux builder).
   echo "==> Building system closure: path:${flake_dir}#nixosConfigurations.${attr}"
-  local toplevel
+  local toplevel gclink
+  gclink="$(gc_root_link "${attr}.toplevel")"
   toplevel="$(nix build \
     ${FRAMEWORK_ARGS[@]+"${FRAMEWORK_ARGS[@]}"} \
     ${BUILDER_ARGS[@]+"${BUILDER_ARGS[@]}"} \
     ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
-    --impure --no-link --print-out-paths \
+    --impure --out-link "$gclink" --print-out-paths \
     "path:${flake_dir}#nixosConfigurations.${attr}.config.system.build.toplevel" | tail -n1)"
   [[ -n "$toplevel" ]] || die "failed to build the system closure."
   echo "==> Built $toplevel"
@@ -416,15 +641,21 @@ case "$SUBCMD" in
   ""|-h|--help)
     cat >&2 <<EOF
 sbc-deploy: usage via the Bazel targets created by the sbc_application macro:
-  bazel run //path:NAME.image_sd      -- [--device /dev/sdX] [--no-write] [--hostname <name>] [--builder <spec>]
-  bazel run //path:NAME.image_sd_base -- [--device /dev/sdX] [--no-write] [--hostname <name>]
-  bazel run //path:NAME.deploy_live   -- <host-or-ip> [--user root] [--builder <spec>]
+  bazel run //path:NAME.image_sd      -- [--device /dev/sdX] [--no-write] [--hostname <name>] [--builder <spec> | --cross] [--keep-builder]
+  bazel run //path:NAME.image_sd_base -- [--device /dev/sdX] [--no-write] [--hostname <name>] [--builder <spec> | --cross] [--keep-builder]
+  bazel run //path:NAME.deploy_live   -- <host-or-ip> [--user root] [--builder <spec> | --cross] [--keep-builder]
   bazel run //path:NAME.ssh           -- [host-or-ip] [--user root] [-- <ssh args>]
   bazel run //path:NAME.keys          -- {init|ensure|rotate|path|pub}
 
-On aarch64-darwin (Apple Silicon) an image can't be built locally; run the
-linux-builder VM target, or pass --builder (a nix --builders spec) /
-SBC_NIX_BUILDERS. See the README "Building on Apple Silicon".
+On aarch64-darwin (Apple Silicon) an image can't be built natively. By DEFAULT
+the build auto-manages a sized aarch64-linux builder VM: it boots one on demand
+(only when something actually needs building — a fully-cached re-run touches no
+builder), dispatches the build, copies the result into your local /nix/store,
+and shuts the VM down afterwards. Fully zero-conf: no sudo, no /etc/nix changes
+(it boots with its own key under ~/.config/sbc-deploy). --keep-builder leaves the
+VM running for fast iteration. Alternatively pass --builder <spec> to use your
+own aarch64-linux builder, or --cross to cross-compile locally (no builder, but
+rebuilds from source; best on x86_64-linux). See the README.
 EOF
     exit 2 ;;
   *) die "unknown subcommand '$SUBCMD' (expected image|deploy|ssh|keys|builder|cache)" ;;

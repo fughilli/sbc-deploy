@@ -15,6 +15,21 @@
   # Board support comes from nvmd/nixos-raspberrypi. Building an image requires
   # an aarch64-linux builder (native or binfmt/qemu cross) and enough RAM/disk
   # for the RPi kernel compile when it is not served from a binary cache.
+  #
+  # CROSS-BUILDING. Instead of dispatching to a native aarch64-linux builder,
+  # the host can cross-compile the aarch64-linux closure directly (so macOS and
+  # x86_64-linux need no builder VM/box). hostPlatform stays aarch64-linux (set
+  # by the board module); mkSbcSystem pins nixpkgs.buildPlatform to the build
+  # machine, which flips nixpkgs into cross mode, AND re-sources the RPi kernel +
+  # firmware from the (now cross-capable) system pkgs — the board module
+  # otherwise takes them from nixos-raspberrypi.packages.<system>, a native
+  # aarch64-linux package set that ignores buildPlatform and would still require
+  # an aarch64-linux builder (see the cross-kernel override in mkSbcSystem). Opt
+  # in with the `buildPlatform` arg, or the $SBC_CROSS / $SBC_BUILD_PLATFORM env
+  # seam the deploy script's `--cross` flag drives. Trade-off: the binary caches
+  # only hold *native* aarch64-linux, so a cross build has no cache hits and
+  # rebuilds from source (including the RPi kernel) — see the README "Building on
+  # Apple Silicon".
 
   description = "sbc-deploy — reusable Bazel + Nix framework for deploying apps to single-board computers";
 
@@ -44,16 +59,47 @@
       };
 
       # Build a Raspberry Pi NixOS system.
-      #   board       : "raspberry-pi-5" (default) or "raspberry-pi-4".
-      #   hostName    : network hostname; also the default nixosConfigurations key.
-      #   modules     : consumer NixOS modules (app definitions, extra hardware…).
-      #   stateVersion: NixOS state version.
+      #   board        : "raspberry-pi-5" (default) or "raspberry-pi-4".
+      #   hostName     : network hostname; also the default nixosConfigurations key.
+      #   modules      : consumer NixOS modules (app definitions, extra hardware…).
+      #   stateVersion : NixOS state version.
+      #   buildPlatform: when non-null, cross-compile the (aarch64-linux) system
+      #                  on this build platform (e.g. "aarch64-darwin" or
+      #                  "x86_64-linux") instead of building it natively /
+      #                  dispatching to a remote aarch64-linux builder. Overrides
+      #                  the $SBC_CROSS / $SBC_BUILD_PLATFORM env seam below.
       mkSbcSystem =
         { hostName
         , board ? "raspberry-pi-5"
         , modules ? [ ]
         , stateVersion ? "25.05"
+        , buildPlatform ? null
         }:
+        let
+          # Cross seam. hostPlatform is fixed to aarch64-linux by the board
+          # module; setting nixpkgs.buildPlatform to a *different* platform flips
+          # nixpkgs into cross-compilation, so the host realizes the closure
+          # itself. Resolution (first non-empty wins): the explicit buildPlatform
+          # arg, then $SBC_BUILD_PLATFORM (an explicit platform string), then
+          # $SBC_CROSS (any non-empty value) => the host's builtins.currentSystem.
+          # Env vars use the same getEnv-at-eval seam as hostname/wifi/pubkey and
+          # are read only under `--impure`; in pure eval they are "" and this
+          # stays inert (native aarch64-on-aarch64 build, today's behaviour).
+          envBuildPlatform = builtins.getEnv "SBC_BUILD_PLATFORM";
+          envCross = builtins.getEnv "SBC_CROSS";
+          resolvedBuildPlatform =
+            if buildPlatform != null then buildPlatform
+            else if envBuildPlatform != "" then envBuildPlatform
+            else if envCross != "" then builtins.currentSystem
+            else null;
+
+          # The cross-capable kernel attr the nixos-raspberrypi kernel-and-firmware
+          # overlay exposes on the system `pkgs`, derived from the board name:
+          # "raspberry-pi-5" -> "linuxPackages_rpi5", "…-02" -> "linuxPackages_rpi02".
+          # See the cross-kernel override in the module list below.
+          kernelPackagesAttr =
+            "linuxPackages_rpi" + nixpkgs.lib.removePrefix "raspberry-pi-" board;
+        in
         nixos-raspberrypi.lib.nixosSystem {
           specialArgs = inputs // { inherit self; };
           modules = [
@@ -64,6 +110,62 @@
                 # Provides config.system.build.sdImage.
                 nixos-raspberrypi.nixosModules.sd-image
               ];
+            })
+
+            # Cross-compilation: pin the build platform when requested (see the
+            # cross seam above). Inert (mkIf false) for a native build, so the
+            # aarch64-on-aarch64 path is byte-for-byte unchanged.
+            ({ lib, pkgs, ... }: lib.mkIf (resolvedBuildPlatform != null) {
+              # hostPlatform stays aarch64-linux (board module); pinning
+              # buildPlatform to a *different* platform flips nixpkgs into cross
+              # mode so this host realizes the closure.
+              nixpkgs.buildPlatform = resolvedBuildPlatform;
+
+              # Re-source the kernel + RPi firmware from the system's own (now
+              # cross-capable) pkgs. The board module defaults BOTH to
+              # nixos-raspberrypi.packages.<system>.* — a *native* aarch64-linux
+              # instantiation (`import nixpkgs { system = "aarch64-linux"; }`) that
+              # ignores nixpkgs.buildPlatform, so it always demands an
+              # aarch64-linux builder and defeats --cross (the kernel + firmware
+              # are the very things cross-building has to produce locally). The
+              # kernel-and-firmware overlay already exposes the same attrs on the
+              # system pkgs: pkgs.linuxPackages_rpiN builds via `buildLinux`, which
+              # honours stdenv.hostPlatform and cross-compiles, and
+              # pkgs.raspberrypifw is prebuilt firmware (a plain unpack that now
+              # runs on the build platform instead of needing an aarch64-linux one).
+              # mkForce beats the board module's mkDefault. This whole module is
+              # inert for a native build, so cached native artifacts are unaffected.
+              boot.kernelPackages = lib.mkForce pkgs.${kernelPackagesAttr};
+              boot.loader.raspberry-pi.firmwarePackage = lib.mkForce pkgs.raspberrypifw;
+
+              # systemd's BPF framework (withLibBPF) compiles its BPF programs at
+              # build time, pulling bpftool + clang/llvm as *build-host*
+              # (nativeBuildInputs) tools. Those are Linux-only, so a non-Linux
+              # build host (macOS) can't provide them and cross eval dies on
+              # `bpftools … not available on hostPlatform "…-darwin"`. Disable the
+              # framework, but ONLY when the build host isn't Linux — an
+              # x86_64-linux -> aarch64-linux cross keeps it (bpftool runs there).
+              # The overlay gates itself on buildPlatform, so it's a no-op for a
+              # Linux builder even though this module is active.
+              nixpkgs.overlays = [
+                (final: prev:
+                  nixpkgs.lib.optionalAttrs (!prev.stdenv.buildPlatform.isLinux) {
+                    systemd = prev.systemd.override { withLibBPF = false; };
+                  })
+              ];
+
+              # Many build-time helpers (e.g. yodl, used to render zsh's man
+              # pages) are perfectly portable but nixpkgs marks them
+              # `platforms = linux`, so cross eval from a non-Linux host is
+              # *refused* before they even get a chance to compile. Downgrade that
+              # refusal to a warning so those tools build for the Darwin build
+              # host and the cross can proceed. Only genuinely Linux-bound tools
+              # (which we disable at the feature level, e.g. systemd's bpftool
+              # above) would then fail later at build time, which is the correct
+              # signal. Scoped to a non-Linux build host; a Linux builder keeps the
+              # strict default. (resolvedBuildPlatform is non-null here.)
+              nixpkgs.config.allowUnsupportedSystem =
+                !(nixpkgs.lib.hasInfix "linux" resolvedBuildPlatform);
             })
 
             # Reusable sbc-deploy modules (always on; wifi is inert unless an
@@ -96,16 +198,20 @@
       #   appModules    : the application — services.sbcApps + any system deps.
       #   systemModules : base config baked into BOTH images (wifi, hardware…),
       #                   so the base image can reach the network for deploy_live.
+      #   buildPlatform : cross-compile on this platform instead of dispatching to
+      #                   a native aarch64-linux builder (see mkSbcSystem); null
+      #                   defers to the $SBC_CROSS / $SBC_BUILD_PLATFORM env seam.
       mkSbcProject =
         { hostName
         , board ? "raspberry-pi-5"
         , appModules ? [ ]
         , systemModules ? [ ]
         , stateVersion ? "25.05"
+        , buildPlatform ? null
         }:
         let
           mk = extra: mkSbcSystem {
-            inherit hostName board stateVersion;
+            inherit hostName board stateVersion buildPlatform;
             modules = systemModules ++ extra;
           };
           full = mk appModules;
