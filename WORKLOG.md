@@ -123,10 +123,15 @@ Profiled (via the build server, sshing into a `--keep-builder` VM). Findings:
   ntfs-3g, xfsprogs, f2fs-tools + kernel modules into a headless app image that
   only mounts vfat /boot + ext4 root. `sbc-base.nix` now mkForces those false.
   Closure **2.6 -> 2.3 GiB** (total NM+fs trim: **3.5 -> 2.3 GiB**).
-- Remaining opt-in: generic `linux-firmware` (731M) via
-  `enableRedistributableFirmware` — `sbcDeploy.leanFirmware` (default off)
-  mkForces it false; the Pi's own `raspberrypi-wireless-firmware` is a SEPARATE
-  closure path so WiFi should survive, but needs a hardware boot to confirm.
+- **Generic linux-firmware trim (now default ON).** `sbcDeploy.leanFirmware`
+  (default true) mkForces `enableRedistributableFirmware = false`, dropping the
+  731M blob. CAVEAT found by building it: nixpkgs' all-firmware.nix gates the
+  Pi's OWN wifi/BT firmware on that same flag, so it vanished too — WiFi would
+  break. Fixed by adding `hardware.firmware = [ pkgs.raspberrypiWirelessFirmware ]`
+  back explicitly under the same mkIf. Result: `linux-firmware` gone,
+  `raspberrypi-wireless-firmware` kept. Closure **2.3 -> ~1.6 GiB** (total from
+  the original 3.5 GiB: **-1.9 GiB, ~54%**). Set `sbcDeploy.leanFirmware = false`
+  to restore the full blob. NEEDS a hardware boot to confirm WiFi/BT still work.
 
 **GC-as-we-go / qcow2 discard (user's question) — investigated, NOT done.** Tried
 `discard=unmap` on the builder's root qcow2 drive (easy, darwin-side only — it

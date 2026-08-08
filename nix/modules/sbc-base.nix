@@ -13,17 +13,27 @@
 { config, lib, pkgs, ... }:
 let cfg = config.sbcDeploy;
 in {
-  options.sbcDeploy.leanFirmware = lib.mkEnableOption ''
-    dropping the generic linux-firmware blob (~700 MB of firmware for hardware a
-    Raspberry Pi doesn't have). The Pi's own Wi-Fi/Bluetooth firmware
-    (raspberrypi-wireless-firmware) is provided separately and is kept, so Wi-Fi
-    should still work — but this disables hardware.enableRedistributableFirmware,
-    so verify Wi-Fi/Bluetooth on your actual board before relying on it
-  '';
+  options.sbcDeploy.leanFirmware = lib.mkOption {
+    type = lib.types.bool;
+    default = true;
+    description = ''
+      Drop the generic linux-firmware blob (~700 MB of firmware for hardware a
+      Raspberry Pi doesn't have) by disabling hardware.enableRedistributableFirmware.
+      ON by default: the Pi's own Wi-Fi/Bluetooth firmware
+      (raspberrypi-wireless-firmware) is a separate closure path and is kept, so
+      Wi-Fi/Bluetooth should still work — but if a peripheral needs a generic
+      blob, set this to false to include the full linux-firmware again.
+    '';
+  };
 
   config = {
-  # Trim the generic firmware blob when opted in (see the option above).
+  # Drop the generic firmware blob by default (see the option above)…
   hardware.enableRedistributableFirmware = lib.mkIf cfg.leanFirmware (lib.mkForce false);
+  # …but the Pi's own Wi-Fi/Bluetooth firmware is pulled in via that same flag in
+  # nixpkgs' all-firmware.nix, so it would vanish too. Add it back explicitly so
+  # Wi-Fi/BT keep working without the 731 MB generic blob. (raspberrypi-firmware,
+  # the bootloader/GPU firmware, comes from the board module and is unaffected.)
+  hardware.firmware = lib.mkIf cfg.leanFirmware [ pkgs.raspberrypiWirelessFirmware ];
 
   # mDNS: advertise <hostName>.local and resolve *.local.
   services.avahi = {
