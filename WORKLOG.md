@@ -117,23 +117,32 @@ Profiled (via the build server, sshing into a `--keep-builder` VM). Findings:
   `networking.networkmanager.plugins = mkForce []`. Verified: closure **3.5 →
   2.6 GiB**, webkitgtk/plugins gone. Smaller closure ⇒ smaller ext4 ⇒ smaller
   builder peak too, so it helps both.
-- Remaining target cruft (opt-in / TODO): generic `linux-firmware` (731M) via
-  `enableRedistributableFirmware` — added `sbcDeploy.leanFirmware`
-  (mkEnableOption, default off) that mkForces it false; the Pi's own
-  `raspberrypi-wireless-firmware` is a SEPARATE closure path so WiFi should
-  survive, but needs a hardware boot to confirm. `samba` (110M) via
-  `cifs-utils` in system-path from the RPi sd-image's `profiles/base.nix` rescue
-  toolkit — not yet trimmed.
+- **Filesystem toolkit trim (done).** The RPi sd-image's `profiles/base.nix`
+  enabled a broad rescue set `boot.supportedFilesystems = { btrfs cifs ext4 f2fs
+  ntfs vfat xfs zfs }`, dragging zfs-user, btrfs-progs, cifs-utils(->samba 110M),
+  ntfs-3g, xfsprogs, f2fs-tools + kernel modules into a headless app image that
+  only mounts vfat /boot + ext4 root. `sbc-base.nix` now mkForces those false.
+  Closure **2.6 -> 2.3 GiB** (total NM+fs trim: **3.5 -> 2.3 GiB**).
+- Remaining opt-in: generic `linux-firmware` (731M) via
+  `enableRedistributableFirmware` — `sbcDeploy.leanFirmware` (default off)
+  mkForces it false; the Pi's own `raspberrypi-wireless-firmware` is a SEPARATE
+  closure path so WiFi should survive, but needs a hardware boot to confirm.
 
-**On GC-as-we-go (user's question):** limited for the *peak* — during image
-assembly the target closure and its ext4 materialization are all live, so nix GC
-can't evict them; min-free would only shave truly-dead build deps, and it also
-can't be set without changing the (cache-served) builder guest closure. It WOULD
-help a *persistent* builder disk's steady-state (reclaim the 2.8 GiB image
-outputs after copy-back). The real peak lever is trimming the target closure
-(done/opt-in above). Deeper unimplemented option: give the builder qcow2
-`discard=unmap` + guest `fstrim` so freed blocks return to the host (needs
-overriding run-nixos-vm's qemu drive line).
+**GC-as-we-go / qcow2 discard (user's question) — investigated, NOT done.** Tried
+`discard=unmap` on the builder's root qcow2 drive (easy, darwin-side only — it
+re-gens just run-nixos-vm, guest stays cache-served) + a post-build `fstrim`. But
+reclaiming needs the fstrim to run as root IN the guest, and the stock
+darwin-builder `builder` user has NO root (verified: no passwordless sudo, root
+ssh disabled). Granting it / mounting the store with continuous `discard` /
+`services.fstrim` all change the GUEST closure, forfeiting the byte-identical
+cache-served guest and re-triggering a from-source guest build every nixpkgs
+bump — a bad trade, especially since the default disk is EPHEMERAL (deleted on
+stop, ~0 at rest) and discard wouldn't lower the ephemeral *peak* anyway (no trim
+happens mid-build). Reverted both. The real, done lever for the peak is trimming
+the target closure (a full copy of it lands in the ext4 image during assembly, so
+−1.2 GiB closure ≈ −2.4 GiB peak). Profiling detail: builder guest holds ~6.5 GiB
+after a build (2.8 GiB of it the built image outputs already copied to the Mac),
+but the host qcow2 hit 17-18 GiB — transient scratch the qcow2 never reclaims.
 
 ### 2026-08-07 — genuinely-cached re-runs + auto-managed builder + macOS cross verdict
 

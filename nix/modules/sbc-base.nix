@@ -53,5 +53,21 @@ in {
   # list. Consumers that genuinely need a VPN client can re-add the specific
   # plugin. (Basic WiFi uses wpa_supplicant, not these.)
   networking.networkmanager.plugins = lib.mkForce [ ];
+
+  # The RPi sd-image's base profile enables a broad rescue-image filesystem set
+  # (zfs, btrfs, xfs, ntfs, cifs, f2fs), each dragging its userland tools into
+  # the image — zfs-user, btrfs-progs, cifs-utils (-> samba ~110 MB), ntfs-3g,
+  # xfsprogs, f2fs-tools — plus kernel modules. A headless app SBC only ever
+  # mounts its own vfat /boot + ext4 root, so drop the rest. mkForce beats the
+  # base profile's defaults; a consumer that needs one back can re-enable it
+  # (e.g. boot.supportedFilesystems.exfat = lib.mkOverride 40 true).
+  boot.supportedFilesystems = {
+    zfs = lib.mkForce false;
+    btrfs = lib.mkForce false;
+    xfs = lib.mkForce false;
+    ntfs = lib.mkForce false;
+    cifs = lib.mkForce false;
+    f2fs = lib.mkForce false;
+  };
   };
 }
