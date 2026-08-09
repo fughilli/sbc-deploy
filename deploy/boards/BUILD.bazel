@@ -1,0 +1,31 @@
+# Predefined board definitions for sbc_application's `board = ` attribute.
+# Reference as @sbc_deploy//deploy/boards:raspberry-pi-N. Define your own with
+# the sbc_board rule (load "@sbc_deploy//deploy:boards.bzl").
+load("//deploy:boards.bzl", "sbc_board")
+
+package(default_visibility = ["//visibility:public"])
+
+# display-vc4 (HDMI / VC4-KMS console) is available on the Pi 5/4/02 and useful
+# for on-a-monitor commissioning; the Pi 3 ships only `base` upstream.
+sbc_board(
+    name = "raspberry-pi-5",
+    nixos_board = "raspberry-pi-5",
+    modules = ["display-vc4"],
+)
+
+sbc_board(
+    name = "raspberry-pi-4",
+    nixos_board = "raspberry-pi-4",
+    modules = ["display-vc4"],
+)
+
+sbc_board(
+    name = "raspberry-pi-3",
+    nixos_board = "raspberry-pi-3",
+)
+
+sbc_board(
+    name = "raspberry-pi-02",
+    nixos_board = "raspberry-pi-02",
+    modules = ["display-vc4"],
+)

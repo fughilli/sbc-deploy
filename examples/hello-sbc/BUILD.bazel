@@ -12,6 +12,12 @@ sbc_application(
     name = "hello",
     flake = "examples/hello-sbc/nix",
     hostname = "hello",
+    # Target board. Predefined defs live in @sbc_deploy//deploy/boards; swap the
+    # label (…:raspberry-pi-5 / -4 / -3 / -02) or define your own with sbc_board.
+    board = "@sbc_deploy//deploy/boards:raspberry-pi-3",
+    # Super-lean base image (headless appliance): drop the rescue toolkit, docs,
+    # and default extra packages. Set False to keep them for on-board debugging.
+    lean = True,
     # sbc-deploy's own framework lives in this same repo at //nix, so inject it:
     # the targets build against the in-tree framework (no `nix flake update`).
     framework = "nix",

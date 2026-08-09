@@ -41,6 +41,16 @@
         virtualisation.darwin-builder.memorySize = 8192; # MiB (default 3072)
         virtualisation.darwin-builder.diskSize = 61440; # MiB (default 20480) — RPi kernel build scratch is large
         virtualisation.cores = 6;
+        # NOTE: we intentionally do NOT try to shrink a *persistent* builder disk
+        # via qcow2 discard. discard=unmap on the drive is easy (darwin-side only),
+        # but reclaiming needs an in-guest `fstrim`, and the stock darwin-builder
+        # `builder` user has no root (no passwordless sudo; root ssh disabled).
+        # Granting it — or mounting the store with continuous `discard`, or
+        # enabling services.fstrim — all change the GUEST closure, which forfeits
+        # the byte-identical cache-served guest above and re-triggers a from-source
+        # guest build on every nixpkgs bump. Not worth it: the default builder disk
+        # is ephemeral (deleted on stop, ~0 at rest), and the build *peak* is
+        # reduced instead by trimming the target closure (see nix/modules).
       };
 
       installerFor = system:

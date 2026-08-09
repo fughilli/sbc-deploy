@@ -288,9 +288,11 @@ the board is always reachable even with an empty `/etc`.
 - `nix` with flakes — required in all cases: building any deploy target realizes
   the hermetic bash from Nix, and the targets drive `nix` to build an image or
   to build/copy/activate a system for deploy. `ssh` for deploy/ssh targets.
-- An `aarch64-linux` builder for image builds, with enough RAM/disk to compile
-  the RPi kernel when it isn't cache-served. On a Linux host this is just the
-  host itself; on macOS see below.
+- A way to produce `aarch64-linux` outputs, with enough RAM/disk to compile the
+  RPi kernel when it isn't cache-served. On an `aarch64-linux` host this is just
+  the host itself. On macOS or `x86_64-linux`, either dispatch to a native
+  `aarch64-linux` builder (cache-served, fast) or cross-compile on the host with
+  `--cross` (no builder, but rebuilds from source) — see below.
 
 ## Building on Apple Silicon (aarch64-darwin)
 
@@ -301,10 +303,48 @@ execute on macOS — so a Mac cannot build them locally. You'll see:
 error: a 'aarch64-linux' with features {} is required to build '…', but I am a 'aarch64-darwin'
 ```
 
-Cross-compiling the whole closure (Darwin → Linux) isn't practical — the binary
-caches only have *native* `aarch64-linux`, so a cross build would rebuild the
-world from source. Instead, dispatch the build to a **native `aarch64-linux`
-builder**: same CPU arch, so it runs at full speed with full cache hits.
+**The default just works — no flags, no config.** On macOS the build targets
+*auto-manage* a sized `aarch64-linux` builder VM for you:
+
+```sh
+bazel run //examples/hello-sbc:hello.image_sd -- --no-write
+```
+
+On demand it boots the VM (only when something actually needs building — a
+fully-cached re-run touches no builder at all), dispatches the build, copies the
+result into your local `/nix/store`, and shuts the VM down afterwards. It's
+fully zero-conf: **no `sudo`, no `/etc/nix` changes**. It boots the packaged
+`darwin.linux-builder` with its own SSH key under `~/.config/sbc-deploy` (which
+lets it skip the credential-sync step that would otherwise need root), and
+dispatches with an inline `--builders` spec — so you only need to be a Nix
+trusted user (the default on a Determinate install). Add `--keep-builder`
+(or `SBC_KEEP_BUILDER=1`) to leave the VM running for fast iteration.
+
+The VM's disk is **ephemeral by default** — it's scratch (your local
+`/nix/store` holds the real results), and a qcow2 accumulates the whole
+substituted closure (10–20 GB) without shrinking on GC, so it's deleted when the
+managed VM stops. To keep it — trading disk for faster cold builds, since the
+builder's store then persists — set `SBC_BUILDER_DISK=/path/to/builder.qcow2`
+(point it at a roomy volume); `--keep-builder` likewise keeps it while the VM
+stays up.
+
+Because it's a *native* `aarch64-linux` builder, almost the entire closure comes
+from the binary caches as substitutes — only the config-specific derivations are
+actually built, and those are GC-rooted (see [below](#genuinely-cached-re-runs)),
+so an unchanged re-run rebuilds nothing and needs no builder.
+
+The rest of this section covers the manual alternatives, for when you want to run
+your own builder, use a remote box, or cross-compile. The trade-off:
+
+- **Dispatch to a native `aarch64-linux` builder** (the auto-managed default, or
+  Options A/B below) — same CPU arch, so full speed with **full binary-cache
+  hits**.
+- **Cross-compile locally** (Option C) — no builder at all, but the binary caches
+  only hold *native* `aarch64-linux`, so a cross build gets **no cache hits and
+  rebuilds the world from source** (including the RPi kernel). Slowest first
+  build, and it does **not** work on macOS for a full system (some build steps,
+  e.g. NetworkManager's introspection, must *run* Linux binaries) — use it on an
+  `x86_64-linux` host.
 
 **Option A — local Linux builder VM.** A NixOS VM that registers as an
 `aarch64-linux` builder. Do the one-time config once, then start a VM.
@@ -400,6 +440,41 @@ this rev, so the builder compiles it once — give it ≥8 GB RAM and ~25 GB fre
 
 For `deploy_live`, the same `--builder` applies; alternatively add
 `-- --build-host <pi>` to build directly on the target board.
+
+**Option C — cross-compile locally, no builder.** Build the `aarch64-linux`
+closure right on the host (macOS *or* `x86_64-linux`) with a Nix cross toolchain.
+The board module fixes the system's `hostPlatform` to `aarch64-linux`; passing
+`--cross` pins `nixpkgs.buildPlatform` to your host, which flips nixpkgs into
+cross-compilation so the host realizes the closure itself:
+
+```sh
+bazel run //examples/hello-sbc:hello.image_sd -- --no-write --cross
+```
+
+No VM, no remote box, no one-time Nix config. The catch is caching: the binary
+caches only have *native* `aarch64-linux`, so the cross build gets **no cache
+hits and rebuilds from source** — including the RPi kernel. Give the host ample
+RAM and disk (≥8 GB / ~25 GB free) and expect a long first build; subsequent
+builds reuse your local store. `--cross` and `--builder` are mutually exclusive
+(they're the two alternatives). It applies to `deploy_live` the same way, and
+you can set `SBC_CROSS=1` to make it the default without the flag.
+
+At the library level the same switch is `mkSbcProject { …; buildPlatform =
+"aarch64-darwin"; }` (or `mkSbcSystem`), for consumers assembling a system
+directly; `null` (the default) defers to the `--cross` / `SBC_CROSS` env seam.
+
+### Genuinely cached re-runs
+
+Re-running a build you've already done should rebuild nothing and not touch the
+builder. The config-specific derivations (the image, your app,
+`root-authorized_keys`, the systemd/NetworkManager units) are in *no* binary
+cache, so if they aren't kept locally, each re-run rebuilds them on the builder.
+The image targets therefore keep a **GC root** (`--out-link` under a gitignored
+`.sbc-build/`), which pins the whole closure so Nix garbage collection (which
+runs aggressively on Determinate) can't reap it. Result: after the first build,
+an unchanged re-run finishes in seconds, entirely from your local store, with the
+builder shut down. (The auto-managed backend also runs a quick `--dry-run` first
+and only boots the VM if something genuinely needs building.)
 
 ### Persisting the build cache (so you can stop the builder)
 

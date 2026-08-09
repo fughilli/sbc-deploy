@@ -9,6 +9,15 @@
 /result-*
 /tmp-sbc-image
 
+# GC-root out-links for built images/closures (keep outputs from being
+# auto-GC'd so cached re-runs don't rebuild; see deploy/scripts/sbc_deploy.sh).
+/.sbc-build/
+
+# Stray builder-VM artifacts if ever run with cwd = repo root (the managed
+# builder pins these to ~/.config and ~/.cache instead; see sbc_deploy.sh).
+/nixos.qcow2
+/keys/
+
 # Secrets / deploy keys — never commit private key material.
 # Each example/consumer keeps its own secrets/ dir at any depth; only the
 # README is tracked. Leading **/ is required so the rule matches nested dirs
@@ -25,3 +34,5 @@
 
 # Don't commit WiFi credentials
 examples/hello-sbc/wifi.yaml
+
+credentials/

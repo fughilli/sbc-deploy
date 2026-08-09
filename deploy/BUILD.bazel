@@ -3,6 +3,7 @@ package(default_visibility = ["//visibility:public"])
 
 exports_files([
     "defs.bzl",
+    "boards.bzl",
 ])
 
 exports_files(
