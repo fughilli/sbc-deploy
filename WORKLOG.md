@@ -95,6 +95,25 @@ The core framework is proven end-to-end on hardware (see above). Remaining:
 
 ## Log
 
+### 2026-08-09 — super-lean base image (`lean` attribute)
+
+Added an `sbc_application(lean = True)` attribute for a super-lean headless-
+appliance image, flowing Bazel -> `$SBC_LEAN` -> `mkSbcSystem` (env over the new
+`leanImage` arg; same seam as board/hostname). `--lean` flag in sbc_deploy.sh
+exports SBC_LEAN. When on, `mkSbcSystem`:
+- `disabledModules` the RPi sd-image's `profiles/base.nix` — checked upstream, it
+  only sets a rescue toolkit (vim/testdisk/ddrescue/sshfs/tcpdump/smartmontools/
+  …), a broad `supportedFilesystems` set, and a ZFS `hostId`; none wanted on a
+  headless ext4/vfat board (ext4/vfat drivers come from the mounts). Note:
+  disabledModules is a top-level module key (can't be `mkIf`-gated), so it reads
+  `resolvedLean` directly — hence the arg/env seam rather than a NixOS option.
+- `documentation.{enable,man,nixos,doc,info} = mkForce false` and
+  `environment.defaultPackages = mkForce []` (drops perl/rsync/strace).
+Example sets `lean = True`. Bazel-validated in-container (`--lean` in the image
+args). **NOT yet nix-eval'd / built** (no nix in the container, build server was
+down) — needs a build + boot test on the Mac to confirm eval + the size delta.
+Est. a few hundred MB off the ~1.6 GiB closure.
+
 ### 2026-08-09 — board is a first-class rule attribute (+ Pi 3B support)
 
 `board` was buried in the consumer's Nix flake (`mkSbcProject { board = … }`).

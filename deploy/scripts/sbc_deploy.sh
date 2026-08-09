@@ -54,6 +54,10 @@ NIX_BUILDERS="${SBC_NIX_BUILDERS:-}"
 # SBC_BUILD_PLATFORM. Trade-off: cross artifacts aren't in the binary cache, so
 # this rebuilds from source (incl. the RPi kernel). See the README.
 CROSS="${SBC_CROSS:-}"
+# Super-lean base image (drop the RPi sd-image rescue toolkit, docs, and default
+# extra packages). Set by --lean (the sbc_application `lean` attr) or SBC_LEAN;
+# exported as SBC_LEAN for the flake to read at eval. See the README.
+LEAN="${SBC_LEAN:-}"
 # Workspace-relative path to sbc-deploy's own nix/ flake dir, when it lives in
 # the same source tree (in-repo example, or vendored in-tree). When set, builds
 # inject it via `--override-input sbc-deploy path:…` so Bazel is the single
@@ -321,11 +325,12 @@ parse_common_flags() {
       --builder)         # append; nix separates multiple builders with ';'
                          NIX_BUILDERS="${NIX_BUILDERS:+$NIX_BUILDERS ; }$2"; shift 2 ;;
       --cross)           CROSS=1; shift ;;
+      --lean)            LEAN=1; shift ;;
       --keep-builder)    KEEP_BUILDER=1; shift ;;
       --)                # everything after `--` is forwarded verbatim to nix
                          shift
                          while [[ $# -gt 0 ]]; do EXTRA_ARGS+=("$1"); shift; done ;;
-      -*)                die "unrecognized option '$a'. Recognized: --device <dev>, --no-write, --hostname <name>, --user <name>, --builder <spec>, --cross, --keep-builder. To pass flags to nix, put them after a literal '--' (e.g. '-- -- --dry-run')." ;;
+      -*)                die "unrecognized option '$a'. Recognized: --device <dev>, --no-write, --hostname <name>, --user <name>, --builder <spec>, --cross, --lean, --keep-builder. To pass flags to nix, put them after a literal '--' (e.g. '-- -- --dry-run')." ;;
       *)                 POSITIONAL+=("$a"); shift ;;
     esac
   done
@@ -630,6 +635,10 @@ cmd_cache() {
 # --- dispatch ---------------------------------------------------------------
 POSITIONAL=()
 parse_common_flags "$@"
+
+# Super-lean base image: the flake reads $SBC_LEAN at eval (--impure). Exported
+# for image/deploy; harmless for keys/ssh/builder (no nix eval of the image).
+[[ -n "$LEAN" ]] && export SBC_LEAN=1
 
 case "$SUBCMD" in
   keys)    cmd_keys ;;

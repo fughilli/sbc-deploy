@@ -79,8 +79,17 @@
         , modules ? [ ]
         , stateVersion ? "25.05"
         , buildPlatform ? null
+        , leanImage ? false
         }:
         let
+          # Super-lean seam. When on, strip the RPi sd-image's rescue toolkit
+          # (profiles/base.nix: vim/testdisk/ddrescue/… + a broad filesystem set),
+          # documentation, and NixOS's default extra packages — none of which a
+          # headless appliance needs. Driven from Bazel via the sbc_application
+          # `lean` attribute ($SBC_LEAN), or the `leanImage` arg for direct-Nix
+          # consumers. Same getEnv-at-eval seam as board/hostname.
+          envLean = builtins.getEnv "SBC_LEAN";
+          resolvedLean = if envLean != "" then envLean == "1" else leanImage;
           # Board seam. The board and its optional nixos-raspberrypi submodules
           # can be selected from Bazel via the sbc_application `board` attribute
           # (a board-definition target), which bakes $SBC_BOARD /
@@ -134,6 +143,28 @@
               ++ nixpkgs.lib.filter (m: m != null)
                    (map (m: nixos-raspberrypi.nixosModules.${resolvedBoard}.${m} or null)
                         resolvedBoardModules);
+            })
+
+            # Super-lean: drop the RPi sd-image's profiles/base.nix — its only
+            # config is a rescue toolkit (vim/testdisk/ddrescue/sshfs/tcpdump/…), a
+            # broad supportedFilesystems set, and a ZFS hostId; none are wanted on
+            # a headless ext4/vfat appliance (the ext4/vfat drivers come from the
+            # mounts, not this profile). disabledModules is a top-level module key
+            # that can't be gated by mkIf, so it reads resolvedLean directly.
+            ({ modulesPath, ... }: {
+              disabledModules =
+                nixpkgs.lib.optional resolvedLean (modulesPath + "/profiles/base.nix");
+            })
+
+            # Super-lean: no docs / NixOS manual and none of NixOS's default extra
+            # packages (perl/rsync/strace) on a headless appliance.
+            ({ lib, ... }: lib.mkIf resolvedLean {
+              documentation.enable = lib.mkForce false;
+              documentation.man.enable = lib.mkForce false;
+              documentation.nixos.enable = lib.mkForce false;
+              documentation.doc.enable = lib.mkForce false;
+              documentation.info.enable = lib.mkForce false;
+              environment.defaultPackages = lib.mkForce [ ];
             })
 
             # Cross-compilation: pin the build platform when requested (see the
@@ -233,10 +264,11 @@
         , systemModules ? [ ]
         , stateVersion ? "25.05"
         , buildPlatform ? null
+        , leanImage ? false
         }:
         let
           mk = extra: mkSbcSystem {
-            inherit hostName board boardModules stateVersion buildPlatform;
+            inherit hostName board boardModules stateVersion buildPlatform leanImage;
             modules = systemModules ++ extra;
           };
           full = mk appModules;

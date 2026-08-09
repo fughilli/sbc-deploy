@@ -58,6 +58,7 @@ def sbc_application(
         name,
         flake,
         board = None,
+        lean = False,
         hostname = None,
         project = None,
         framework = None,
@@ -75,6 +76,10 @@ def sbc_application(
         Default `//deploy/boards:raspberry-pi-5`; predefined targets live in
         `@sbc_deploy//deploy/boards`. Flows to `mkSbcSystem` via `$SBC_BOARD` /
         `$SBC_BOARD_MODULES`, so the consumer's flake needn't hardcode a board.
+      lean: super-lean base image — drop the RPi sd-image rescue toolkit
+        (vim/testdisk/ddrescue/…), documentation, and NixOS's default extra
+        packages. Right for a headless appliance; leaves coreutils/systemd/your
+        shell. Flows to `mkSbcSystem` via `$SBC_LEAN`. Default False.
       hostname: nixosConfigurations attr name for live deploy (default: project).
       project: project name for key comment/messages (default: name).
       framework: workspace-relative path to sbc-deploy's own `nix/` flake dir,
@@ -94,6 +99,8 @@ def sbc_application(
     base = ["--project", project, "--flake-subdir", flake]
     if framework:
         base += ["--framework-subdir", framework]
+    if lean:
+        base += ["--lean"]
 
     # Declarative WiFi: convert the YAML to JSON in the Bazel graph so Nix reads
     # it natively (fromJSON). The launcher resolves the JSON's runfiles path and
