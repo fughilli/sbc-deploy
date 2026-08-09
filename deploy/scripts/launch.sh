@@ -28,6 +28,7 @@ bash_rlocationpath="$1"; shift
 wifi_json_rlocationpath="$1"; shift   # "-" sentinel when no wifi config file
 zstd_rlocationpath="$1"; shift        # "-" sentinel when not needed (e.g. builder)
 pv_rlocationpath="$1"; shift          # "-" sentinel when not needed
+board_rlocationpath="$1"; shift       # "-" sentinel when not needed (e.g. builder)
 
 script="$(rlocation "$script_rlocationpath")" || {
   echo >&2 "ERROR: could not resolve deploy script ($script_rlocationpath) in runfiles"; exit 1; }
@@ -54,6 +55,17 @@ if [[ "$pv_rlocationpath" != "-" ]]; then
   SBC_PV="$(rlocation "$pv_rlocationpath")" || {
     echo >&2 "ERROR: could not resolve pv ($pv_rlocationpath) in runfiles"; exit 1; }
   export SBC_PV
+fi
+
+# Board definition (from the sbc_application `board` attr / an sbc_board target).
+# The file is two lines: the nixos-raspberrypi board name, then comma-joined
+# optional submodules. Export both for Nix eval to read (see mkSbcSystem).
+if [[ "$board_rlocationpath" != "-" ]]; then
+  board_file="$(rlocation "$board_rlocationpath")" || {
+    echo >&2 "ERROR: could not resolve board definition ($board_rlocationpath) in runfiles"; exit 1; }
+  SBC_BOARD="$(sed -n 1p "$board_file")"
+  SBC_BOARD_MODULES="$(sed -n 2p "$board_file")"
+  export SBC_BOARD SBC_BOARD_MODULES
 fi
 
 exec "$bash_bin" "$script" "$@"

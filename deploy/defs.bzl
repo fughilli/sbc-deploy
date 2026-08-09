@@ -51,9 +51,13 @@ _ZSTD = Label("@nixpkgs_zstd//:zstd")
 _PV = Label("@nixpkgs_pv//:pv")
 _RUNFILES = Label("@bazel_tools//tools/bash/runfiles:runfiles")
 
+# Default board definition (see //deploy/boards and //deploy:boards.bzl).
+_DEFAULT_BOARD = Label("//deploy/boards:raspberry-pi-5")
+
 def sbc_application(
         name,
         flake,
+        board = None,
         hostname = None,
         project = None,
         framework = None,
@@ -66,6 +70,11 @@ def sbc_application(
         .deploy_live / .keys.
       flake: workspace-relative path to the directory holding flake.nix (which
         returns `sbc-deploy.lib.mkSbcProject { … }`).
+      board: label of a board definition (an `sbc_board` target carrying
+        `SbcBoardInfo`) naming the nixos-raspberrypi board + optional submodules.
+        Default `//deploy/boards:raspberry-pi-5`; predefined targets live in
+        `@sbc_deploy//deploy/boards`. Flows to `mkSbcSystem` via `$SBC_BOARD` /
+        `$SBC_BOARD_MODULES`, so the consumer's flake needn't hardcode a board.
       hostname: nixosConfigurations attr name for live deploy (default: project).
       project: project name for key comment/messages (default: name).
       framework: workspace-relative path to sbc-deploy's own `nix/` flake dir,
@@ -81,6 +90,7 @@ def sbc_application(
     """
     project = project or name
     hostname = hostname or project
+    board = board or _DEFAULT_BOARD
     base = ["--project", project, "--flake-subdir", flake]
     if framework:
         base += ["--framework-subdir", framework]
@@ -107,15 +117,18 @@ def sbc_application(
 
     # The launcher resolves these runfiles paths, then execs bash on the script.
     # rlocationpath is repo-qualified, so it works from any consumer. Order:
-    # script, bash, wifi-json (or "-"), zstd, pv.
+    # script, bash, wifi-json (or "-"), zstd, pv, board-file. The board file (two
+    # lines: board name, then comma-joined modules) is read by the launcher and
+    # exported as $SBC_BOARD / $SBC_BOARD_MODULES for Nix eval.
     lead = [
         "$(rlocationpath {})".format(_SCRIPT),
         "$(rlocationpath {})".format(_BASH),
         wifi_lead,
         "$(rlocationpath {})".format(_ZSTD),
         "$(rlocationpath {})".format(_PV),
+        "$(rlocationpath {})".format(board),
     ]
-    data = [_SCRIPT, _BASH, _ZSTD, _PV, _RUNFILES] + wifi_data
+    data = [_SCRIPT, _BASH, _ZSTD, _PV, _RUNFILES, board] + wifi_data
 
     def _target(suffix, argv):
         sh_binary(
@@ -153,6 +166,7 @@ def _tool_target(name, subcommand, framework, visibility):
             "-",  # no wifi config file
             "-",  # no zstd
             "-",  # no pv
+            "-",  # no board definition
             subcommand,
             "--framework-subdir",
             framework,

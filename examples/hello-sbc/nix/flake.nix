@@ -27,7 +27,9 @@
   outputs = { self, sbc-deploy, ... }:
     sbc-deploy.lib.mkSbcProject {
       hostName = "hello";
-      board = "raspberry-pi-5";
+      # `board` is selected from Bazel via the sbc_application `board` attribute
+      # (see ../BUILD.bazel) — it flows in through $SBC_BOARD, so it isn't set
+      # here. A direct-Nix consumer could pass `board = "raspberry-pi-3";`.
       appModules = [ ./hello-app.nix ];
       systemModules = [ ./network.nix ];
     };

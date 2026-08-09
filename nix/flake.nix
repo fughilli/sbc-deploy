@@ -59,7 +59,11 @@
       };
 
       # Build a Raspberry Pi NixOS system.
-      #   board        : "raspberry-pi-5" (default) or "raspberry-pi-4".
+      #   board        : nixos-raspberrypi board, e.g. "raspberry-pi-5" (default),
+      #                  "raspberry-pi-4", "raspberry-pi-3", "raspberry-pi-02".
+      #                  Overridden by $SBC_BOARD (the sbc_application `board` attr).
+      #   boardModules : optional nixos-raspberrypi board submodules to import,
+      #                  e.g. [ "display-vc4" ]. Overridden by $SBC_BOARD_MODULES.
       #   hostName     : network hostname; also the default nixosConfigurations key.
       #   modules      : consumer NixOS modules (app definitions, extra hardware…).
       #   stateVersion : NixOS state version.
@@ -71,11 +75,25 @@
       mkSbcSystem =
         { hostName
         , board ? "raspberry-pi-5"
+        , boardModules ? [ ]
         , modules ? [ ]
         , stateVersion ? "25.05"
         , buildPlatform ? null
         }:
         let
+          # Board seam. The board and its optional nixos-raspberrypi submodules
+          # can be selected from Bazel via the sbc_application `board` attribute
+          # (a board-definition target), which bakes $SBC_BOARD /
+          # $SBC_BOARD_MODULES — read here under `--impure`, same getEnv-at-eval
+          # seam as hostname/wifi. An explicit `board`/`boardModules` arg is the
+          # fallback for consumers assembling a system directly in Nix.
+          envBoard = builtins.getEnv "SBC_BOARD";
+          resolvedBoard = if envBoard != "" then envBoard else board;
+          envBoardModules = builtins.getEnv "SBC_BOARD_MODULES";
+          resolvedBoardModules =
+            if envBoardModules != ""
+            then nixpkgs.lib.filter (m: m != "") (nixpkgs.lib.splitString "," envBoardModules)
+            else boardModules;
           # Cross seam. hostPlatform is fixed to aarch64-linux by the board
           # module; setting nixpkgs.buildPlatform to a *different* platform flips
           # nixpkgs into cross-compilation, so the host realizes the closure
@@ -98,18 +116,24 @@
           # "raspberry-pi-5" -> "linuxPackages_rpi5", "…-02" -> "linuxPackages_rpi02".
           # See the cross-kernel override in the module list below.
           kernelPackagesAttr =
-            "linuxPackages_rpi" + nixpkgs.lib.removePrefix "raspberry-pi-" board;
+            "linuxPackages_rpi" + nixpkgs.lib.removePrefix "raspberry-pi-" resolvedBoard;
         in
         nixos-raspberrypi.lib.nixosSystem {
           specialArgs = inputs // { inherit self; };
           modules = [
             ({ ... }: {
               imports = [
-                nixos-raspberrypi.nixosModules.${board}.base
-                nixos-raspberrypi.nixosModules.${board}.display-vc4
+                nixos-raspberrypi.nixosModules.${resolvedBoard}.base
                 # Provides config.system.build.sdImage.
                 nixos-raspberrypi.nixosModules.sd-image
-              ];
+              ]
+              # Optional board submodules (display-vc4, bluetooth, …) chosen by the
+              # board definition. Filtered to those the board actually provides, so
+              # a board that lacks one (the Pi 3 has no display-vc4, for instance)
+              # still evaluates instead of erroring on a missing attr.
+              ++ nixpkgs.lib.filter (m: m != null)
+                   (map (m: nixos-raspberrypi.nixosModules.${resolvedBoard}.${m} or null)
+                        resolvedBoardModules);
             })
 
             # Cross-compilation: pin the build platform when requested (see the
@@ -204,6 +228,7 @@
       mkSbcProject =
         { hostName
         , board ? "raspberry-pi-5"
+        , boardModules ? [ ]
         , appModules ? [ ]
         , systemModules ? [ ]
         , stateVersion ? "25.05"
@@ -211,7 +236,7 @@
         }:
         let
           mk = extra: mkSbcSystem {
-            inherit hostName board stateVersion buildPlatform;
+            inherit hostName board boardModules stateVersion buildPlatform;
             modules = systemModules ++ extra;
           };
           full = mk appModules;

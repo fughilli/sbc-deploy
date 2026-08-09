@@ -95,6 +95,35 @@ The core framework is proven end-to-end on hardware (see above). Remaining:
 
 ## Log
 
+### 2026-08-09 — board is a first-class rule attribute (+ Pi 3B support)
+
+`board` was buried in the consumer's Nix flake (`mkSbcProject { board = … }`).
+Made it a first-class Bazel attribute fed by board-definition targets:
+- `deploy/boards.bzl` — `sbc_board` rule + `SbcBoardInfo` provider (fields: the
+  nixos-raspberrypi board name + optional submodules like `display-vc4`). It
+  writes a two-line file (board name / comma-joined modules).
+- `deploy/boards/BUILD.bazel` — predefined targets rpi 5/4/3/02.
+- `sbc_application(board = "@sbc_deploy//deploy/boards:raspberry-pi-3")` — the
+  board file becomes the 6th launcher lead arg; `launch.sh` reads it and exports
+  `$SBC_BOARD` / `$SBC_BOARD_MODULES`; `mkSbcSystem`/`mkSbcProject` resolve those
+  (env over arg) — same impure-eval seam as hostname/wifi. `_tool_target` (builder/
+  cache) passes a `-` sentinel. Consumers define custom boards via
+  `load("@sbc_deploy//deploy:boards.bzl", "sbc_board")`.
+- Nix: replaced the hardcoded `${board}` uses with `resolvedBoard`; optional board
+  submodules are imported from `resolvedBoardModules`, filtered to those the board
+  actually provides (`… .${m} or null`), so a board without one (the Pi 3 has no
+  display-vc4) still evaluates. Example now sets `board` in BUILD.bazel and drops
+  it from the flake.
+
+**Verified on hardware:** a Pi 3B image (`board = …:raspberry-pi-3`) built via the
+managed builder, flashed, boots, connects to WiFi (so leanFirmware kept the right
+blob), and accepts SSH. Bazel side validated in-container (board targets build,
+correct file content, board file lands in the target's args+data). Note: the Pi 3
+kernel (`linux_rpi-bcm2711`) is NOT in nixos-raspberrypi's binary cache for this
+rev, so it compiles from source — needs a roomy builder disk (use
+`SBC_BUILDER_DISK=/big/volume/…` to avoid filling the Mac's main disk; an I/O
+error mid-kernel-build is that host disk filling up).
+
 ### 2026-08-07 — image slimming + builder-disk profiling
 
 User asked why the ephemeral builder disk hits ~22 GiB and whether it's genuine.
