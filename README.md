@@ -320,6 +320,14 @@ dispatches with an inline `--builders` spec — so you only need to be a Nix
 trusted user (the default on a Determinate install). Add `--keep-builder`
 (or `SBC_KEEP_BUILDER=1`) to leave the VM running for fast iteration.
 
+This works for **external `bazel_dep` consumers too**, not just this repo's own
+examples: the `sbc_application` macro ships the builder flake (`//nix/builder`,
+with its own committed lock) in each generated target's runfiles, so the
+auto-managed VM is realised from the **Bazel-pinned** framework — no
+`--framework-subdir` and no vendored copy. (The manual `//:linux_builder` /
+`//:cache` targets and the `--override-input` framework pin still require
+sbc-deploy's `nix/` in your source tree.)
+
 The VM's disk is **ephemeral by default** — it's scratch (your local
 `/nix/store` holds the real results), and a qcow2 accumulates the whole
 substituted closure (10–20 GB) without shrinking on GC, so it's deleted when the

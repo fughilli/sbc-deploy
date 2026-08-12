@@ -95,6 +95,40 @@ The core framework is proven end-to-end on hardware (see above). Remaining:
 
 ## Log
 
+### 2026-08-12 — auto-managed builder works for external `bazel_dep` consumers
+
+The zero-conf macOS builder (2026-08-09, `#3`) only fired when sbc-deploy's `nix/`
+was in the consumer's source tree: `start_managed_builder` resolves the builder
+flake from `$(repo_root)/$FRAMEWORK_SUBDIR/builder`, and `--framework-subdir` is
+only set when the consumer passes `framework=`. External `bazel_dep` consumers
+(e.g. splanc's `pi/hitl`, which pins us via a flake input + `git_override`) never
+set it, so they got *"Could not auto-start… deferring to globally-configured
+builders"* and had to `--cross` or run a builder by hand.
+
+Fix: ship the builder flake in every generated target's **runfiles** and realise
+the VM from there when `--framework-subdir` is absent. Bazel already pins our
+version, and `nix/builder` is self-contained with its own committed
+`flake.lock`, so this needs no in-tree copy, no lock parsing, no network.
+
+- `nix/builder/BUILD.bazel` (new): `filegroup(srcs)` + `exports_files(flake.nix)`.
+- `deploy/defs.bzl`: `_BUILDER`/`_BUILDER_SRCS`; add the flake to each target's
+  `data` and a 7th `lead` slot (`_tool_target` passes `-`).
+- `deploy/scripts/launch.sh`: resolve the 7th arg → export `$SBC_BUILDER_FLAKE`
+  (same pattern as `$SBC_BOARD`/`$SBC_ZSTD`).
+- `deploy/scripts/sbc_deploy.sh`: `start_managed_builder` prefers
+  `--framework-subdir` (unchanged), else falls back to
+  `dirname $SBC_BUILDER_FLAKE`. `--override-input` still only fires with an
+  explicit `--framework-subdir`, so external consumers keep evaluating their own
+  pinned input. Fully back-compatible.
+
+**Verified:** `bash -n` both scripts; buildifier clean (pre-existing warnings
+only); `bazel query` — `//nix/builder:{srcs,flake.nix}` resolve and
+`labels(data, //examples/hello-sbc:hello.image_sd)` now includes
+`//nix/builder:srcs`. **NOT yet verified: the runfiles `path:` realisation on a
+real Apple-Silicon Mac** (no macOS in the dev container) — this is the merge
+gate: confirm `bazel run …image_sd` on macOS auto-boots the sized VM from the
+runfiles builder flake and tears it down at exit.
+
 ### 2026-08-09 — super-lean base image (`lean` attribute)
 
 Added an `sbc_application(lean = True)` attribute for a super-lean headless-

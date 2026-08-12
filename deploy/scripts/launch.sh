@@ -29,6 +29,7 @@ wifi_json_rlocationpath="$1"; shift   # "-" sentinel when no wifi config file
 zstd_rlocationpath="$1"; shift        # "-" sentinel when not needed (e.g. builder)
 pv_rlocationpath="$1"; shift          # "-" sentinel when not needed
 board_rlocationpath="$1"; shift       # "-" sentinel when not needed (e.g. builder)
+builder_rlocationpath="$1"; shift     # "-" sentinel when using --framework-subdir
 
 script="$(rlocation "$script_rlocationpath")" || {
   echo >&2 "ERROR: could not resolve deploy script ($script_rlocationpath) in runfiles"; exit 1; }
@@ -66,6 +67,16 @@ if [[ "$board_rlocationpath" != "-" ]]; then
   SBC_BOARD="$(sed -n 1p "$board_file")"
   SBC_BOARD_MODULES="$(sed -n 2p "$board_file")"
   export SBC_BOARD SBC_BOARD_MODULES
+fi
+
+# The darwin linux-builder VM flake, shipped in runfiles so the auto-managed
+# builder can be realised from the Bazel-pinned framework without an in-tree
+# copy (see start_managed_builder). Export the resolved flake.nix path; the
+# script takes its dirname as the flake dir (flake.lock sits beside it).
+if [[ "$builder_rlocationpath" != "-" ]]; then
+  SBC_BUILDER_FLAKE="$(rlocation "$builder_rlocationpath")" || {
+    echo >&2 "ERROR: could not resolve builder flake ($builder_rlocationpath) in runfiles"; exit 1; }
+  export SBC_BUILDER_FLAKE
 fi
 
 exec "$bash_bin" "$script" "$@"

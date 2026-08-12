@@ -51,6 +51,14 @@ _ZSTD = Label("@nixpkgs_zstd//:zstd")
 _PV = Label("@nixpkgs_pv//:pv")
 _RUNFILES = Label("@bazel_tools//tools/bash/runfiles:runfiles")
 
+# The self-contained darwin linux-builder VM flake, shipped in each deploy
+# target's runfiles so the auto-managed builder (macOS) can be realised from the
+# Bazel-pinned framework — no in-tree/vendored copy and no `--framework-subdir`,
+# so it works for external bazel_dep consumers. See nix/builder and
+# start_managed_builder in sbc_deploy.sh.
+_BUILDER = Label("//nix/builder:flake.nix")
+_BUILDER_SRCS = Label("//nix/builder:srcs")
+
 # Default board definition (see //deploy/boards and //deploy:boards.bzl).
 _DEFAULT_BOARD = Label("//deploy/boards:raspberry-pi-5")
 
@@ -87,7 +95,9 @@ def sbc_application(
         When set, builds inject it via `--override-input sbc-deploy path:…` so
         Bazel is the single source of the framework version — no
         `nix flake update`. Omit for external bazel_dep consumers, who pin the
-        framework via their own flake input.
+        framework via their own flake input; they still get the auto-managed
+        macOS builder, since the builder flake (`//nix/builder`) is shipped in
+        every generated target's runfiles (see start_managed_builder).
       wifi_config_file: label of a single YAML file listing WiFi networks (ssid /
         psk / priority / hidden) to auto-connect to. Converted to JSON at build
         time and baked into the image. Merges with any inline `sbcDeploy.wifi`.
@@ -124,9 +134,11 @@ def sbc_application(
 
     # The launcher resolves these runfiles paths, then execs bash on the script.
     # rlocationpath is repo-qualified, so it works from any consumer. Order:
-    # script, bash, wifi-json (or "-"), zstd, pv, board-file. The board file (two
-    # lines: board name, then comma-joined modules) is read by the launcher and
-    # exported as $SBC_BOARD / $SBC_BOARD_MODULES for Nix eval.
+    # script, bash, wifi-json (or "-"), zstd, pv, board-file, builder-flake. The
+    # board file (two lines: board name, then comma-joined modules) is read by the
+    # launcher and exported as $SBC_BOARD / $SBC_BOARD_MODULES for Nix eval; the
+    # builder flake is resolved to $SBC_BUILDER_FLAKE so the auto-managed macOS
+    # builder can be realised from the pinned framework (see sbc_deploy.sh).
     lead = [
         "$(rlocationpath {})".format(_SCRIPT),
         "$(rlocationpath {})".format(_BASH),
@@ -134,8 +146,9 @@ def sbc_application(
         "$(rlocationpath {})".format(_ZSTD),
         "$(rlocationpath {})".format(_PV),
         "$(rlocationpath {})".format(board),
+        "$(rlocationpath {})".format(_BUILDER),
     ]
-    data = [_SCRIPT, _BASH, _ZSTD, _PV, _RUNFILES, board] + wifi_data
+    data = [_SCRIPT, _BASH, _ZSTD, _PV, _RUNFILES, board, _BUILDER_SRCS] + wifi_data
 
     def _target(suffix, argv):
         sh_binary(
@@ -174,6 +187,7 @@ def _tool_target(name, subcommand, framework, visibility):
             "-",  # no zstd
             "-",  # no pv
             "-",  # no board definition
+            "-",  # no builder flake (this target uses --framework-subdir)
             subcommand,
             "--framework-subdir",
             framework,
