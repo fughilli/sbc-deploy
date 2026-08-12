@@ -148,7 +148,11 @@ def sbc_application(
         "$(rlocationpath {})".format(board),
         "$(rlocationpath {})".format(_BUILDER),
     ]
-    data = [_SCRIPT, _BASH, _ZSTD, _PV, _RUNFILES, board, _BUILDER_SRCS] + wifi_data
+
+    # _BUILDER (flake.nix) must be listed directly so its $(rlocationpath) in
+    # `lead` has a declared prerequisite; _BUILDER_SRCS carries flake.lock into
+    # runfiles beside it so the realised path: flake evaluates purely.
+    data = [_SCRIPT, _BASH, _ZSTD, _PV, _RUNFILES, board, _BUILDER, _BUILDER_SRCS] + wifi_data
 
     def _target(suffix, argv):
         sh_binary(
