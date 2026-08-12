@@ -171,11 +171,21 @@ builder_probe_ourkey() {
   rm -f "$kh"; return 1
 }
 
-# Boot the sized VM in the background with our key. Needs the framework in-tree
-# (--framework-subdir), which supplies nix/builder. Returns non-zero if it can't.
+# Boot the sized VM in the background with our key. Resolves the builder flake
+# two ways, in precedence order: an in-tree framework (--framework-subdir, for
+# vendored/in-repo consumers), else the Bazel-pinned builder flake shipped in the
+# target's runfiles ($SBC_BUILDER_FLAKE, set by the launcher) — so external
+# bazel_dep consumers get the auto-managed builder with no in-tree copy. Returns
+# non-zero if neither is available.
 start_managed_builder() {
-  [[ -n "$FRAMEWORK_SUBDIR" ]] || return 1
-  local bflake; bflake="$(repo_root)/${FRAMEWORK_SUBDIR%/}/builder"
+  local bflake
+  if [[ -n "$FRAMEWORK_SUBDIR" ]]; then
+    bflake="$(repo_root)/${FRAMEWORK_SUBDIR%/}/builder"        # in-tree / vendored framework
+  elif [[ -n "${SBC_BUILDER_FLAKE:-}" ]]; then
+    bflake="$(dirname "$SBC_BUILDER_FLAKE")"                    # Bazel-pinned builder from runfiles
+  else
+    return 1
+  fi
   [[ -f "$bflake/flake.nix" ]] || return 1
   # Extract run-builder (the boot half of create-builder) so we can boot with our
   # own $KEYS and skip add-keys' sudo credential sync.
@@ -252,7 +262,7 @@ ensure_managed_builder() {
   fi
   start_managed_builder || {
     echo "==> Could not auto-start a builder; deferring to globally-configured builders." >&2
-    echo "    (Auto-start needs the framework in-tree via --framework-subdir; or start //:linux_builder, or pass --builder/--cross.)" >&2
+    echo "    (Auto-start needs the builder flake: run via the sbc_application-generated target (ships it in runfiles), pass --framework-subdir, or use --builder/--cross.)" >&2
     return 0
   }
   # Our VM's port is up; now wait for sshd to accept our key before dispatching.

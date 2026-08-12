@@ -1,0 +1,22 @@
+# Expose the self-contained darwin linux-builder VM flake (flake.nix + its own
+# committed flake.lock) to Bazel, so the sbc_application macro can ship it in
+# each deploy target's runfiles. That lets the auto-managed builder (macOS) be
+# realised from the Bazel-pinned framework for EXTERNAL bazel_dep consumers too —
+# no in-tree/vendored copy and no `--framework-subdir`. See
+# //deploy:scripts/sbc_deploy.sh (start_managed_builder) and defs.bzl (_BUILDER).
+package(default_visibility = ["//visibility:public"])
+
+# The flake dir's sources, added to consumer targets' runfiles. flake.lock rides
+# along so `nix build path:…#linux-builder` evaluates purely (no network / no
+# lock write) from the copied runfiles path.
+filegroup(
+    name = "srcs",
+    srcs = [
+        "flake.lock",
+        "flake.nix",
+    ],
+)
+
+# flake.nix is passed by rlocationpath; the launcher resolves it and the script
+# takes its dirname as the flake dir (flake.lock sits beside it in runfiles).
+exports_files(["flake.nix"])
