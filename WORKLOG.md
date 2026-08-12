@@ -95,6 +95,18 @@ The core framework is proven end-to-end on hardware (see above). Remaining:
 
 ## Log
 
+### 2026-08-12 — fix: builder flake.nix must be a declared `data` prerequisite
+
+Follow-up to #4. `lead` references `$(rlocationpath _BUILDER)` where `_BUILDER =
+//nix/builder:flake.nix`, but `data` only carried the `_BUILDER_SRCS` filegroup —
+so the file label wasn't a *direct* prerequisite and analysis failed for every
+consumer: *"label '…/nix/builder:flake.nix' in $(location) expression is not a
+declared prerequisite"*. Caught bumping splanc's pin (the `image_sd` target
+wouldn't analyze). Fix: add `_BUILDER` to `data` (keep `_BUILDER_SRCS` for
+flake.lock). Verified: `bazel build //pi/hitl:hitl_la.image_sd` (splanc) via
+`--override_module=sbc_deploy=…` succeeds, and both `flake.nix`+`flake.lock`
+land in the target's runfiles.
+
 ### 2026-08-12 — auto-managed builder works for external `bazel_dep` consumers
 
 The zero-conf macOS builder (2026-08-09, `#3`) only fired when sbc-deploy's `nix/`
