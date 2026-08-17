@@ -11,9 +11,16 @@ Usage (in a consumer BUILD.bazel):
     sbc_application(
         name = "myboard",
         flake = "path/to/nix",   # workspace-relative dir containing flake.nix
-        hostname = "myboard",    # nixosConfigurations.<hostname>; default = project
+        hostname = "myboard",    # the config's baked hostName / nixosConfigurations
+                                 # attr; default = project
         project = "myboard",     # key comment + messages; default = name
     )
+
+Two orthogonal axes, so one config serves many boards:
+  * The TARGET picks WHAT to build — a full/base image, or a live switch.
+  * `--hostname` picks the machine IDENTITY (networking.hostName, and thus the
+    tailscale name / AP SSID under a consumer's naming scheme) — the SAME flag in
+    every mode. Omit it to get the baked-in `hostname`.
 
 This creates targets for the three deployment modes (+ key management):
 
@@ -21,14 +28,16 @@ This creates targets for the three deployment modes (+ key management):
     bazel run //consumer:myboard.image_sd      -- [--device /dev/sdX] [--no-write] [--hostname <name>]
     # Mode 2 — base system image only (networking, no application):
     bazel run //consumer:myboard.image_sd_base -- [--device /dev/sdX] [--no-write] [--hostname <name>]
-
-    # --hostname overrides the baked-in networking.hostName for this build, so
-    # one config can be flashed onto several boards (e.g. myboard-2).
     # Mode 3 — push the application (+ its system deps) to a running board:
-    bazel run //consumer:myboard.deploy_live   -- <host-or-ip> [--user root]
+    bazel run //consumer:myboard.deploy_live   -- <host-or-ip> [--hostname <name>] [--user root]
 
-    # Convenience — ssh in with the deploy key (default <hostname>.local):
-    bazel run //consumer:myboard.ssh           -- [host-or-ip]
+    # e.g. flash/deploy the same config as several distinct boards:
+    #   bazel run //consumer:myboard.image_sd    -- --hostname myboard-2 --device /dev/sdX
+    #   bazel run //consumer:myboard.deploy_live -- --hostname myboard-2 192.168.1.20
+
+    # Convenience — ssh in with the deploy key (default <hostname>.local, or
+    # <--hostname>.local):
+    bazel run //consumer:myboard.ssh           -- [host-or-ip] [--hostname <name>]
     bazel run //consumer:myboard.keys          -- {init|ensure|rotate|path|pub}
 
 Each is an sh_binary whose src is a small launcher (launch.sh) that execs a
@@ -88,7 +97,11 @@ def sbc_application(
         (vim/testdisk/ddrescue/…), documentation, and NixOS's default extra
         packages. Right for a headless appliance; leaves coreutils/systemd/your
         shell. Flows to `mkSbcSystem` via `$SBC_LEAN`. Default False.
-      hostname: nixosConfigurations attr name for live deploy (default: project).
+      hostname: the config's baked-in hostName — the nixosConfigurations attr that
+        deploy_live/ssh build (matches mkSbcProject's hostName), and the default
+        networking.hostName when no per-deploy --hostname override is given
+        (default: project). This is the config's name, NOT a per-board identity;
+        set the latter with the operator-facing --hostname flag in any mode.
       project: project name for key comment/messages (default: name).
       framework: workspace-relative path to sbc-deploy's own `nix/` flake dir,
         when it lives in the same source tree (in-repo, or vendored in-tree).
@@ -170,10 +183,14 @@ def sbc_application(
     _target("image_sd_base", ["image"] + base + ["--attr", "images.sdImageBase"])
 
     # Mode 3: switch a running board to the full system (app + system deps).
-    _target("deploy_live", ["deploy"] + base + ["--hostname", hostname])
+    # The target bakes WHICH config to build (--nixos-attr, the mode axis); the
+    # operator's --hostname stays free to set the machine identity, consistently
+    # with the image modes.
+    _target("deploy_live", ["deploy"] + base + ["--nixos-attr", hostname])
 
-    # Convenience: ssh to the board with the deploy key (default <hostname>.local).
-    _target("ssh", ["ssh"] + base + ["--hostname", hostname])
+    # Convenience: ssh to the board with the deploy key (default <hostname>.local,
+    # or <--hostname>.local when the operator overrides the identity).
+    _target("ssh", ["ssh"] + base + ["--nixos-attr", hostname])
 
     _target("keys", ["keys"] + base)
 
