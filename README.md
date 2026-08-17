@@ -151,19 +151,24 @@ The write runs under `sudo` (you'll be prompted). Double-check the device — th
 overwrites the whole disk. On macOS the first build/flash pulls `zstd` from the
 cache (tiny).
 
-### Overriding the hostname
+### `--hostname`: per-board identity (every mode)
 
-The image's `networking.hostName` is baked in from the flake's `hostName`. To
-flash the same config onto more than one board, override it per-build with
-`--hostname` (no flake edit needed):
+A board's `networking.hostName` is baked in from the flake's `hostName`. To use
+one config on more than one board, override it per-build with `--hostname` — the
+**same flag in every mode** (image, deploy_live, ssh), no flake edit needed:
 
 ```sh
-bazel run //path:myboard.image_sd -- --hostname myboard-2 --device /dev/sdX
+bazel run //path:myboard.image_sd    -- --hostname myboard-2 --device /dev/sdX
+bazel run //path:myboard.deploy_live -- --hostname myboard-2 192.168.1.20
+bazel run //path:myboard.ssh         -- --hostname myboard-2
 ```
 
-Nix reads `$SBC_HOSTNAME_OVERRIDE` at eval (`--impure`); the flag sets it. This
-also renames the board's mDNS name to `<name>.local`, so reach it afterwards
-with `... .ssh -- myboard-2.local`.
+Nix reads `$SBC_HOSTNAME_OVERRIDE` at eval (`--impure`); the flag sets it. It also
+becomes the board's mDNS name (`<name>.local`). `--hostname` is orthogonal to
+*which* config a target builds: the **target** picks that (full image vs base
+image vs live switch), so the two concerns never collide. (`--hostname` used to
+select the `nixosConfigurations` attr for `deploy_live`/`ssh` — that attr is now a
+separate, target-baked `--nixos-attr`.)
 
 ## SSH deploy key
 

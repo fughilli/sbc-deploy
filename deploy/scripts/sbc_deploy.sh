@@ -7,8 +7,11 @@
 # via the sh_binary `args`, and the operator appends the rest after `--`:
 #
 #   bazel run //path:NAME.image_sd    -- [--device /dev/sdX] [--no-write] [--hostname <name>] [nix args]
-#   bazel run //path:NAME.deploy_live -- <host-or-ip> [--user root] [nix args]
+#   bazel run //path:NAME.deploy_live -- <host-or-ip> [--hostname <name>] [--user root] [nix args]
 #   bazel run //path:NAME.keys        -- {init|ensure|rotate|path|pub}
+#
+# --hostname sets the machine identity (networking.hostName) in ANY mode; the
+# target picks what to build. Omit --hostname for the config's baked hostName.
 #
 # Everything is anchored on the SOURCE tree via BUILD_WORKSPACE_DIRECTORY (set
 # by `bazel run`), never on the read-only runfiles copy — the flake, the
@@ -36,7 +39,13 @@ SUBCMD="${1:-}"
 PROJECT="${SBC_PROJECT:-sbc}"          # name; key comment + messages
 FLAKE_SUBDIR="${SBC_FLAKE_SUBDIR:-}"   # path to the flake dir, relative to repo root
 IMAGE_ATTR="${SBC_IMAGE_ATTR:-images.sdImage}"
-HOSTNAME_ATTR="${SBC_HOSTNAME:-}"      # deploy/ssh: nixosConfigurations.<attr>; image: hostname baked in
+# --hostname is the machine IDENTITY (networking.hostName — and, under a consumer's
+# naming scheme, the tailscale name + AP SSID). It applies to EVERY mode via
+# $SBC_HOSTNAME_OVERRIDE; empty => the flake's baked-in hostName.
+HOSTNAME_ATTR="${SBC_HOSTNAME:-}"
+# --nixos-attr is which nixosConfigurations.<attr> deploy/ssh build — the config
+# variant, baked by the target (image mode uses --attr instead). NOT the identity.
+NIXOS_ATTR="${SBC_NIXOS_ATTR:-}"
 SECRETS_DIR_OVERRIDE="${SBC_DEPLOY_KEY_DIR:-}"
 
 DEVICE=""
@@ -327,6 +336,7 @@ parse_common_flags() {
       --flake-subdir) FLAKE_SUBDIR="$2"; shift 2 ;;
       --attr)         IMAGE_ATTR="$2"; shift 2 ;;
       --hostname)     HOSTNAME_ATTR="$2"; shift 2 ;;
+      --nixos-attr)   NIXOS_ATTR="$2"; shift 2 ;;
       --framework-subdir) FRAMEWORK_SUBDIR="$2"; shift 2 ;;
       --secrets-dir)  SECRETS_DIR_OVERRIDE="$2"; shift 2 ;;
       --device)          DEVICE="$2"; shift 2 ;;
@@ -445,14 +455,6 @@ cmd_image() {
   # lets eval reach it (the key lives outside the flake root on purpose).
   export SBC_DEPLOY_PUBKEY_FILE="$PUB"
 
-  # --hostname overrides the flake's baked-in networking.hostName for this build,
-  # so one config can be flashed onto several boards (e.g. hitl-rig-2). flake.nix
-  # reads $SBC_HOSTNAME_OVERRIDE at eval (--impure); empty => the flake default.
-  if [[ -n "$HOSTNAME_ATTR" ]]; then
-    echo "==> Overriding hostname: $HOSTNAME_ATTR"
-    export SBC_HOSTNAME_OVERRIDE="$HOSTNAME_ATTR"
-  fi
-
   prepare_backend "path:${flake_dir}#${IMAGE_ATTR}"
 
   echo "==> Building SD image: path:${flake_dir}#${IMAGE_ATTR}"
@@ -555,7 +557,9 @@ cmd_deploy() {
 
   local flake_dir attr target
   flake_dir="$(repo_root)/$FLAKE_SUBDIR"
-  attr="${HOSTNAME_ATTR:-$PROJECT}"
+  # Which config to build (the variant, baked by the target); NOT the identity —
+  # that's $SBC_HOSTNAME_OVERRIDE from --hostname, applied above for all modes.
+  attr="${NIXOS_ATTR:-$PROJECT}"
   key_paths
   [[ -f "$PRIV" ]] || die "deploy private key not found at $PRIV. Generate it (and image/deploy the board to trust it) with the .keys target: keys init"
   chmod 600 "$PRIV" 2>/dev/null || true
@@ -605,7 +609,9 @@ cmd_ssh() {
 
   local host target
   host="${POSITIONAL[0]:-}"
-  [[ -n "$host" ]] || host="${HOSTNAME_ATTR:-$PROJECT}.local"
+  # Default target: the identity if --hostname was given, else the config's baked
+  # hostName (the nixos attr), else the project name.
+  [[ -n "$host" ]] || host="${HOSTNAME_ATTR:-${NIXOS_ATTR:-$PROJECT}}.local"
   target="${DEPLOY_USER}@${host}"
 
   echo "==> ssh $target (deploy key: $PRIV)" >&2
@@ -646,6 +652,17 @@ cmd_cache() {
 POSITIONAL=()
 parse_common_flags "$@"
 
+# --hostname is the machine identity in EVERY mode: the flake reads
+# $SBC_HOSTNAME_OVERRIDE at eval (--impure) and uses it for networking.hostName
+# (and thus, under the consumer's naming scheme, the tailscale name + AP SSID), so
+# one config is flashed/deployed onto several boards. Empty => the flake default.
+# The nixosConfigurations attr that deploy/ssh build is a separate axis
+# (--nixos-attr, baked by the target), never the identity.
+if [[ -n "$HOSTNAME_ATTR" ]]; then
+  echo "==> Hostname (identity): $HOSTNAME_ATTR"
+  export SBC_HOSTNAME_OVERRIDE="$HOSTNAME_ATTR"
+fi
+
 # Super-lean base image: the flake reads $SBC_LEAN at eval (--impure). Exported
 # for image/deploy; harmless for keys/ssh/builder (no nix eval of the image).
 [[ -n "$LEAN" ]] && export SBC_LEAN=1
@@ -662,8 +679,8 @@ case "$SUBCMD" in
 sbc-deploy: usage via the Bazel targets created by the sbc_application macro:
   bazel run //path:NAME.image_sd      -- [--device /dev/sdX] [--no-write] [--hostname <name>] [--builder <spec> | --cross] [--keep-builder]
   bazel run //path:NAME.image_sd_base -- [--device /dev/sdX] [--no-write] [--hostname <name>] [--builder <spec> | --cross] [--keep-builder]
-  bazel run //path:NAME.deploy_live   -- <host-or-ip> [--user root] [--builder <spec> | --cross] [--keep-builder]
-  bazel run //path:NAME.ssh           -- [host-or-ip] [--user root] [-- <ssh args>]
+  bazel run //path:NAME.deploy_live   -- <host-or-ip> [--hostname <name>] [--user root] [--builder <spec> | --cross] [--keep-builder]
+  bazel run //path:NAME.ssh           -- [host-or-ip] [--hostname <name>] [--user root] [-- <ssh args>]
   bazel run //path:NAME.keys          -- {init|ensure|rotate|path|pub}
 
 On aarch64-darwin (Apple Silicon) an image can't be built natively. By DEFAULT
