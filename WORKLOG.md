@@ -95,6 +95,27 @@ The core framework is proven end-to-end on hardware (see above). Remaining:
 
 ## Log
 
+### 2026-08-19 — `update`: detect board + read committed capability profile
+
+Builds on the hostname-identity work (#7). New `.update` deploy mode: the "just
+make this board current" target that needs no per-board flags.
+- **Board from hardware.** `update` reads `/proc/device-tree/model` and maps it
+  to `SBC_BOARD` (`board_from_model`), overriding the target's default. You can't
+  push a Pi5 kernel onto a Pi3 — the board picks itself.
+- **Capabilities from a committed profile.** Reads `/var/lib/sbc/profile`
+  (KEY=VALUE `SBC_*` lines, operator-seeded like grafana.env — deliberately NOT a
+  nix module, so nothing auto-writes and blows it away) and exports them for the
+  build. An explicit env var still wins (a re-commission).
+- **Hybrid detect-warn.** `--detect-cmd <remote>` (baked by the macro's
+  `detect_caps_cmd`) runs on the board to report what hardware is physically
+  present; `update` warns when it disagrees with the committed profile.
+- Then hands off to `cmd_deploy` (identity read + build + copy + activate).
+- Macro gains `detect_caps_cmd`; every app now also gets a `.update` target.
+
+**Verified:** `bash -n`. NOT yet run end-to-end (no aarch64 builder here); the
+consumer (splanc pi/hitl) exercises it. Board-from-model map covers Pi 5/4/3/02;
+extend for new platforms.
+
 ### 2026-08-19 — hostname is a persistent, immutable board identity
 
 **Problem.** `--hostname` (`$SBC_HOSTNAME_OVERRIDE`) set `networking.hostName` in
