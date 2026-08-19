@@ -80,6 +80,7 @@ def sbc_application(
         project = None,
         framework = None,
         wifi_config_file = None,
+        detect_caps_cmd = None,
         visibility = None):
     """Create the three deploy-mode targets (+ keys) for one SBC application.
 
@@ -114,6 +115,10 @@ def sbc_application(
       wifi_config_file: label of a single YAML file listing WiFi networks (ssid /
         psk / priority / hidden) to auto-connect to. Converted to JSON at build
         time and baked into the image. Merges with any inline `sbcDeploy.wifi`.
+      detect_caps_cmd: optional shell command run ON the board by the `.update`
+        target to report the capabilities the hardware physically has, as SBC_*
+        KEY=VALUE lines (e.g. `lsusb | grep -q 0925:3881 && echo SBC_ANALYZER=1`).
+        `.update` warns when this disagrees with the board's committed profile.
       visibility: visibility for the generated targets.
     """
     project = project or name
@@ -187,6 +192,16 @@ def sbc_application(
     # operator's --hostname stays free to set the machine identity, consistently
     # with the image modes.
     _target("deploy_live", ["deploy"] + base + ["--nixos-attr", hostname])
+
+    # Mode 3b: the "just make this board current" deploy. Detects the board from
+    # the hardware (right kernel closure, structurally), reads the committed
+    # capability profile off the board, and reuses the board's identity — no
+    # per-board flags, no way to select a mismatched closure. detect_caps_cmd, if
+    # given, is the hybrid detect-warn probe (see the macro docstring).
+    update_argv = ["update"] + base + ["--nixos-attr", hostname]
+    if detect_caps_cmd:
+        update_argv += ["--detect-cmd", detect_caps_cmd]
+    _target("update", update_argv)
 
     # Convenience: ssh to the board with the deploy key (default <hostname>.local,
     # or <--hostname>.local when the operator overrides the identity).

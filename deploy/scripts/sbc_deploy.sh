@@ -340,6 +340,7 @@ parse_common_flags() {
       --attr)         IMAGE_ATTR="$2"; shift 2 ;;
       --hostname)     HOSTNAME_ATTR="$2"; shift 2 ;;
       --nixos-attr)   NIXOS_ATTR="$2"; shift 2 ;;
+      --detect-cmd)   export SBC_DETECT_CMD="$2"; shift 2 ;;  # update: remote probe echoing SBC_* caps
       --framework-subdir) FRAMEWORK_SUBDIR="$2"; shift 2 ;;
       --secrets-dir)  SECRETS_DIR_OVERRIDE="$2"; shift 2 ;;
       --device)          DEVICE="$2"; shift 2 ;;
@@ -624,6 +625,99 @@ cmd_deploy() {
   echo "==> Switch complete on $DEPLOY_HOST."
 }
 
+# Map a Raspberry Pi device-tree model string to the sbc-deploy board name. This
+# is how `update` picks the board FROM THE HARDWARE, so the right kernel/firmware
+# closure is chosen structurally — you can't deploy a Pi 5 closure onto a Pi 3.
+# Extend here as new platforms are supported.
+board_from_model() {
+  case "$1" in
+    *"Raspberry Pi 5"*)      echo "raspberry-pi-5" ;;
+    *"Raspberry Pi 4"*)      echo "raspberry-pi-4" ;;
+    *"Raspberry Pi 3"*)      echo "raspberry-pi-3" ;;
+    *"Raspberry Pi Zero 2"*) echo "raspberry-pi-02" ;;
+    *)                       echo "" ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# update — the "just make this board current" deploy. Unlike deploy_live (a
+# low-level primitive where the operator picks board/caps), update reads WHAT THE
+# BOARD IS and WHAT IT WAS COMMISSIONED AS, and deploys the matching closure:
+#   * board platform  -> detected from /proc/device-tree/model (hardware is
+#     authoritative; can't pick a Pi5 kernel for a Pi3),
+#   * capabilities     -> read from the persisted /var/lib/sbc/profile (KEY=VALUE
+#     SBC_* lines committed at provisioning), with a hybrid detect-warn: if the
+#     consumer supplies SBC_DETECT_CMD, update probes the hardware and warns when
+#     it disagrees with the committed profile,
+#   * identity         -> reused from the board (cmd_deploy reads it).
+# An operator can still override any axis by exporting SBC_BOARD / SBC_* before
+# the run (that's a re-commission); an explicit value always wins over detection.
+# ---------------------------------------------------------------------------
+cmd_update() {
+  DEPLOY_HOST="${POSITIONAL[0]:-}"
+  [[ -n "$DEPLOY_HOST" ]] || { echo "usage: update <host-or-ip> [--user root]" >&2; exit 2; }
+  command -v ssh >/dev/null 2>&1 || die "'ssh' not found."
+  key_paths
+  [[ -f "$PRIV" ]] || die "deploy key not found at $PRIV. Generate it with the .keys target (keys init)."
+  chmod 600 "$PRIV" 2>/dev/null || true
+  local target="${DEPLOY_USER}@${DEPLOY_HOST}"
+  local ssh_opts="-i $PRIV -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+
+  # 1. Board FROM HARDWARE (unless the operator pinned SBC_BOARD explicitly). The
+  #    launcher pre-set SBC_BOARD from the target's default board; detection wins.
+  if [[ -z "${SBC_BOARD_PINNED:-}" ]]; then
+    local model detected
+    # shellcheck disable=SC2086
+    model="$(ssh $ssh_opts "$target" 'cat /proc/device-tree/model 2>/dev/null | tr -d "\0"' || true)"
+    [[ -n "$model" ]] || die "could not read /proc/device-tree/model from $DEPLOY_HOST."
+    detected="$(board_from_model "$model")"
+    [[ -n "$detected" ]] || die "unrecognized board model '$model'; add it to board_from_model()."
+    echo "==> Board (detected): $model -> SBC_BOARD=$detected"
+    export SBC_BOARD="$detected"
+  else
+    echo "==> Board (pinned by operator): SBC_BOARD=$SBC_BOARD"
+  fi
+
+  # 2. Capabilities from the committed profile. Export each SBC_* KEY=VALUE unless
+  #    the operator already set it in the environment (an explicit re-commission).
+  local profile
+  # shellcheck disable=SC2086
+  profile="$(ssh $ssh_opts "$target" 'cat /var/lib/sbc/profile 2>/dev/null' || true)"
+  if [[ -n "$profile" ]]; then
+    while IFS='=' read -r k v; do
+      [[ "$k" == SBC_* ]] || continue
+      if [[ -n "${!k+x}" ]]; then
+        echo "==> Capability $k: operator override ('${!k}') wins over committed ('$v')"
+      else
+        export "$k=$v"
+        echo "==> Capability $k=$v (from committed profile)"
+      fi
+    done <<< "$profile"
+  else
+    echo "==> No committed profile on $DEPLOY_HOST (/var/lib/sbc/profile); deploying with defaults. Commission it to pin capabilities." >&2
+  fi
+
+  # 3. Hybrid detect-warn: probe the hardware for capabilities and warn on drift
+  #    from the committed profile. SBC_DETECT_CMD is a consumer-supplied remote
+  #    command that echoes SBC_* KEY=VALUE lines for what it physically finds.
+  if [[ -n "${SBC_DETECT_CMD:-}" ]]; then
+    local detected_caps
+    # shellcheck disable=SC2086
+    detected_caps="$(ssh $ssh_opts "$target" "$SBC_DETECT_CMD" 2>/dev/null || true)"
+    while IFS='=' read -r k v; do
+      [[ "$k" == SBC_* ]] || continue
+      local want="${!k:-}"
+      if [[ -n "$want" && "$want" != "$v" ]]; then
+        echo "==> WARNING: capability drift — hardware reports $k=$v but this deploy uses $k=$want. Re-commission the profile if the hardware changed." >&2
+      fi
+    done <<< "$detected_caps"
+  fi
+
+  # 4. Hand off to the standard deploy: it reads the identity off the board and
+  #    builds/copies/activates the closure with the SBC_BOARD + SBC_* set above.
+  cmd_deploy
+}
+
 # ---------------------------------------------------------------------------
 # ssh — open a shell on the board using the deploy key. Host defaults to
 # <hostName>.local (mDNS); override with a positional host/IP. Extra args after
@@ -705,6 +799,7 @@ case "$SUBCMD" in
   keys)    cmd_keys ;;
   image)   cmd_image ;;
   deploy)  cmd_deploy ;;
+  update)  cmd_update ;;
   ssh)     cmd_ssh ;;
   builder) cmd_builder ;;
   cache)   cmd_cache ;;
@@ -714,6 +809,7 @@ sbc-deploy: usage via the Bazel targets created by the sbc_application macro:
   bazel run //path:NAME.image_sd      -- [--device /dev/sdX] [--no-write] [--hostname <name>] [--builder <spec> | --cross] [--keep-builder]
   bazel run //path:NAME.image_sd_base -- [--device /dev/sdX] [--no-write] [--hostname <name>] [--builder <spec> | --cross] [--keep-builder]
   bazel run //path:NAME.deploy_live   -- <host-or-ip> [--hostname <name>] [--user root] [--builder <spec> | --cross] [--keep-builder]
+  bazel run //path:NAME.update        -- <host-or-ip> [--user root]   # detect board + committed profile, then deploy
   bazel run //path:NAME.ssh           -- [host-or-ip] [--hostname <name>] [--user root] [-- <ssh args>]
   bazel run //path:NAME.keys          -- {init|ensure|rotate|path|pub}
 
@@ -728,5 +824,5 @@ own aarch64-linux builder, or --cross to cross-compile locally (no builder, but
 rebuilds from source; best on x86_64-linux). See the README.
 EOF
     exit 2 ;;
-  *) die "unknown subcommand '$SUBCMD' (expected image|deploy|ssh|keys|builder|cache)" ;;
+  *) die "unknown subcommand '$SUBCMD' (expected image|deploy|update|ssh|keys|builder|cache)" ;;
 esac
