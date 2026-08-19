@@ -95,6 +95,35 @@ The core framework is proven end-to-end on hardware (see above). Remaining:
 
 ## Log
 
+### 2026-08-19 — hostname is a persistent, immutable board identity
+
+**Problem.** `--hostname` (`$SBC_HOSTNAME_OVERRIDE`) set `networking.hostName` in
+*every* mode, falling back to the baked default when omitted. So a `deploy_live`
+without the flag silently reset a board's identity to the flake default — and
+since consumers derive the tailscale name / AP SSID / metrics `rig` label from
+`config.networking.hostName`, a fleet of boards all collapsed onto one name
+(observed in splanc: 3 HITL rigs all `rig="hitl-rig"`; AP-SSID collisions).
+
+**Fix — identity is set once at commissioning and lives on the board.**
+- `nix/modules/identity.nix` (new, in the always-on bundle): a write-once
+  activation script records `config.networking.hostName` → `/var/lib/sbc/hostname`
+  on first boot, never overwriting.
+- `cmd_deploy` now sources the identity FROM the board (reads that file over ssh
+  with the deploy key) and builds the closure with it, so a redeploy reuses the
+  committed identity and can never fall back to the default. Precedence:
+  committed value wins (a stray `--hostname` can't clobber it); uncommitted +
+  `--hostname` commissions in place; uncommitted + no flag is refused.
+- `image_sd` warns when run without `--hostname` (the card would commit the baked
+  default as its permanent identity). Not a hard error — examples build images
+  without it.
+
+**Verified:** `bash -n` on the script; `nix-instantiate --parse` on
+identity.nix + flake.nix. NOT yet exercised end-to-end here (no aarch64 builder
+in-container); the consuming redeploy (splanc `pi/hitl`) is the live test.
+
+**Next:** consumer splanc/pi/hitl pins this branch and redeploys the 3 rigs,
+writing `/var/lib/sbc/hostname` = hitl-rig-{1,2,3} as the one-time commission.
+
 ### 2026-08-12 — fix: builder flake.nix must be a declared `data` prerequisite
 
 Follow-up to #4. `lead` references `$(rlocationpath _BUILDER)` where `_BUILDER =

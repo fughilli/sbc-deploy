@@ -10,8 +10,10 @@
 #   bazel run //path:NAME.deploy_live -- <host-or-ip> [--hostname <name>] [--user root] [nix args]
 #   bazel run //path:NAME.keys        -- {init|ensure|rotate|path|pub}
 #
-# --hostname sets the machine identity (networking.hostName) in ANY mode; the
-# target picks what to build. Omit --hostname for the config's baked hostName.
+# --hostname sets the board's IDENTITY (networking.hostName), and is meant to be
+# given ONCE at commissioning (image_sd). It's then recorded on the board and
+# reused automatically: deploy_live sources the identity from the board itself
+# (/var/lib/sbc/hostname), so a redeploy never resets it. See cmd_deploy.
 #
 # Everything is anchored on the SOURCE tree via BUILD_WORKSPACE_DIRECTORY (set
 # by `bazel run`), never on the read-only runfiles copy — the flake, the
@@ -39,9 +41,10 @@ SUBCMD="${1:-}"
 PROJECT="${SBC_PROJECT:-sbc}"          # name; key comment + messages
 FLAKE_SUBDIR="${SBC_FLAKE_SUBDIR:-}"   # path to the flake dir, relative to repo root
 IMAGE_ATTR="${SBC_IMAGE_ATTR:-images.sdImage}"
-# --hostname is the machine IDENTITY (networking.hostName — and, under a consumer's
-# naming scheme, the tailscale name + AP SSID). It applies to EVERY mode via
-# $SBC_HOSTNAME_OVERRIDE; empty => the flake's baked-in hostName.
+# --hostname is the board IDENTITY (networking.hostName — and, under a consumer's
+# naming scheme, the tailscale name + AP SSID). Set once at commissioning; it
+# reaches the flake via $SBC_HOSTNAME_OVERRIDE. On deploy_live cmd_deploy sources
+# the identity from the board instead (see there); empty => flake baked hostName.
 HOSTNAME_ATTR="${SBC_HOSTNAME:-}"
 # --nixos-attr is which nixosConfigurations.<attr> deploy/ssh build — the config
 # variant, baked by the target (image mode uses --attr instead). NOT the identity.
@@ -569,6 +572,31 @@ cmd_deploy() {
   export NIX_SSHOPTS="$ssh_opts"          # used by `nix copy` over ssh-ng
   export SBC_DEPLOY_PUBKEY_FILE="$PUB"     # baked into the config at eval (--impure)
 
+  # Identity is device-resident and immutable. The board's hostname is committed
+  # once at commissioning (identity.nix writes it write-once to
+  # /var/lib/sbc/hostname); read it back HERE and build the closure with it, so a
+  # deploy_live reuses the fixed identity and can NEVER reset it to the flake's
+  # baked default (the "blown away by a redeploy" failure mode). Precedence:
+  #   * board already committed  -> that value wins (a stray --hostname can't
+  #                                 clobber it; re-image to change identity);
+  #   * uncommitted + --hostname -> commission in place as that name;
+  #   * uncommitted + no flag    -> refuse (nothing safe to build).
+  local committed
+  # shellcheck disable=SC2086
+  committed="$(ssh $ssh_opts "$target" 'cat /var/lib/sbc/hostname 2>/dev/null' | tr -d '[:space:]' || true)"
+  if [[ -n "$committed" ]]; then
+    if [[ -n "$HOSTNAME_ATTR" && "$HOSTNAME_ATTR" != "$committed" ]]; then
+      echo "==> Board is committed as '$committed'; ignoring --hostname '$HOSTNAME_ATTR' (re-image with image_sd to change identity)." >&2
+    fi
+    echo "==> Identity (from board): $committed"
+    export SBC_HOSTNAME_OVERRIDE="$committed"
+  elif [[ -n "$HOSTNAME_ATTR" ]]; then
+    echo "==> Board has no committed identity; commissioning it in place as '$HOSTNAME_ATTR'." >&2
+    export SBC_HOSTNAME_OVERRIDE="$HOSTNAME_ATTR"
+  else
+    die "board at $DEPLOY_HOST has no committed identity (/var/lib/sbc/hostname) and no --hostname was given. Re-run with --hostname <name> to commission it in place, or (re)flash with image_sd --hostname <name>."
+  fi
+
   prepare_backend "path:${flake_dir}#nixosConfigurations.${attr}.config.system.build.toplevel"
 
   # 1. Build the system closure (aarch64-linux; goes to the linux builder).
@@ -652,15 +680,21 @@ cmd_cache() {
 POSITIONAL=()
 parse_common_flags "$@"
 
-# --hostname is the machine identity in EVERY mode: the flake reads
-# $SBC_HOSTNAME_OVERRIDE at eval (--impure) and uses it for networking.hostName
-# (and thus, under the consumer's naming scheme, the tailscale name + AP SSID), so
-# one config is flashed/deployed onto several boards. Empty => the flake default.
-# The nixosConfigurations attr that deploy/ssh build is a separate axis
-# (--nixos-attr, baked by the target), never the identity.
+# --hostname sets the board's IDENTITY (networking.hostName, and thus — under the
+# consumer's naming scheme — the tailscale name + AP SSID + any `rig` label). The
+# flake reads $SBC_HOSTNAME_OVERRIDE at eval (--impure). Identity is meant to be
+# set ONCE at commissioning (image_sd) and then persist: identity.nix records it
+# to /var/lib/sbc/hostname on first boot, and cmd_deploy re-sources it from the
+# board so a deploy_live reuses the committed identity instead of this flag (see
+# cmd_deploy for the precedence). The nixosConfigurations attr that deploy/ssh
+# build is a separate axis (--nixos-attr, baked by the target), never the identity.
 if [[ -n "$HOSTNAME_ATTR" ]]; then
   echo "==> Hostname (identity): $HOSTNAME_ATTR"
   export SBC_HOSTNAME_OVERRIDE="$HOSTNAME_ATTR"
+elif [[ "$SUBCMD" == "image" ]]; then
+  # Commissioning without an identity: the card will boot as the flake's baked
+  # hostName and commit THAT as its permanent identity. Almost never intended.
+  echo "==> WARNING: building an image without --hostname; the card will commission itself as the flake's baked hostName. Pass --hostname <name> to give it a stable per-board identity." >&2
 fi
 
 # Super-lean base image: the flake reads $SBC_LEAN at eval (--impure). Exported

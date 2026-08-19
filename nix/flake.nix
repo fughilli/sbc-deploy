@@ -54,6 +54,7 @@
         sbc-base = modulesDir + "/sbc-base.nix";
         ssh-deploy = modulesDir + "/ssh-deploy.nix";
         app-service = modulesDir + "/app-service.nix";
+        identity = modulesDir + "/identity.nix";
         wifi = modulesDir + "/wifi.nix";
         spi = modulesDir + "/spi.nix";
       };
@@ -228,13 +229,17 @@
             sbcModules.sbc-base
             sbcModules.ssh-deploy
             sbcModules.app-service
+            sbcModules.identity
             sbcModules.wifi
 
             {
-              # Flash/deploy one config onto several boards without editing the
-              # flake: $SBC_HOSTNAME_OVERRIDE (read under `nix build --impure`;
-              # set by the deploy script's `--hostname` flag) wins over the
-              # baked-in hostName when non-empty. Same getEnv-at-eval seam as
+              # The board's IDENTITY. $SBC_HOSTNAME_OVERRIDE (read under `nix
+              # build --impure`) wins over the baked-in hostName when non-empty.
+              # At commissioning the deploy script's `--hostname` flag sets it; on
+              # a later deploy_live the script instead sources it from the board's
+              # own committed identity (/var/lib/sbc/hostname, written write-once by
+              # identity.nix) — so a redeploy reuses the fixed identity and can
+              # never reset it to the baked default. Same getEnv-at-eval seam as
               # wifi.nix / ssh-deploy.nix; empty (incl. pure eval) => hostName.
               networking.hostName =
                 let override = builtins.getEnv "SBC_HOSTNAME_OVERRIDE";
@@ -290,7 +295,7 @@
 
       nixosModules = sbcModules // {
         # `default` = the always-on bundle, for `imports = [ ...default ]`.
-        default = { imports = [ sbcModules.sbc-base sbcModules.ssh-deploy sbcModules.app-service sbcModules.wifi ]; };
+        default = { imports = [ sbcModules.sbc-base sbcModules.ssh-deploy sbcModules.app-service sbcModules.identity sbcModules.wifi ]; };
       };
     };
 }
