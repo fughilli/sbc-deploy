@@ -71,6 +71,16 @@ _BUILDER_SRCS = Label("//nix/builder:srcs")
 # Default board definition (see //deploy/boards and //deploy:boards.bzl).
 _DEFAULT_BOARD = Label("//deploy/boards:raspberry-pi-5")
 
+def _shquote(s):
+    """Single-quote a string so it survives Bazel's Bourne-shell tokenization of a
+    `*_binary.args` element as ONE argument. Without this, a value with spaces or
+    shell metacharacters — e.g. a `detect_caps_cmd` like
+    `lsusb | grep -q 0925:3881 && echo …` — is split into several args when the
+    target runs, and stray tokens (`-q`) get misread as flags. The launcher
+    forwards "$@" verbatim, so a single quoted token reaches sbc_deploy.sh intact.
+    Embedded single quotes are escaped with the standard `'\\''` idiom."""
+    return "'" + s.replace("'", "'\\''") + "'"
+
 def sbc_application(
         name,
         flake,
@@ -200,7 +210,9 @@ def sbc_application(
     # given, is the hybrid detect-warn probe (see the macro docstring).
     update_argv = ["update"] + base + ["--nixos-attr", hostname]
     if detect_caps_cmd:
-        update_argv += ["--detect-cmd", detect_caps_cmd]
+        # Bazel Bourne-tokenizes `args`, so quote the probe (spaces + `| && ||`)
+        # to keep it a single argument (else `-q` etc. leak as deploy flags).
+        update_argv += ["--detect-cmd", _shquote(detect_caps_cmd)]
     _target("update", update_argv)
 
     # Convenience: ssh to the board with the deploy key (default <hostname>.local,
