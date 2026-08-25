@@ -18,16 +18,14 @@ sh_binary(
 )
 
 # Offline sibling: add WiFi profiles to an ALREADY-IMAGED SD card (no boot, no
-# rebuild) via e2tools. The leading arg is e2cp's runfiles path; the whole e2tools
-# bin dir rides along in data so e2mkdir/e2ls/e2rm resolve beside it.
+# rebuild) via e2fsprogs' debugfs. The leading arg is debugfs's runfiles path.
 #   bazel run @sbc_deploy//deploy:sd_seed_wifi -- --device /dev/sdX --ssid S --psk P
 sh_binary(
     name = "sd_seed_wifi",
     srcs = ["scripts/sd_seed_wifi.sh"],
-    args = ["$(rlocationpath @nixpkgs_e2tools//:e2cp)"],
+    args = ["$(rlocationpath @nixpkgs_e2fsprogs//:debugfs)"],
     data = [
         "@bazel_tools//tools/bash/runfiles",
-        "@nixpkgs_e2tools//:e2cp",
-        "@nixpkgs_e2tools//:e2tools",
+        "@nixpkgs_e2fsprogs//:debugfs",
     ],
 )

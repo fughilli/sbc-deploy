@@ -7,11 +7,12 @@
 # autoconnect-priority (see nix/modules/wifi.nix) and is interchangeable with an
 # online seed: `seed_wifi.sh --list/--remove` on the booted board sees these too.
 #
-# Uses e2tools (e2cp/e2mkdir/e2ls/e2rm) to write into ext4 by device node — NO
-# mount, NO root for the filesystem semantics (the profile is stored root:root 0600
-# regardless of who runs the tool), cross-platform (Linux + macOS, where you can't
-# mount ext4 at all). Only raw access to the card's block device needs privilege;
-# the tool re-execs the e2tools calls under sudo when the device isn't writable.
+# Uses e2fsprogs' `debugfs` to write into ext4 by device node — NO mount, and the
+# profile is stored root:root 0600 regardless of who runs the tool. Cross-platform
+# (Linux + macOS, where you can't mount ext4 at all — e2fsprogs IS available there,
+# unlike e2tools). Raw block-device access needs privilege, so the tool re-execs
+# debugfs under sudo when the device isn't writable; on macOS it first
+# `diskutil unmountDisk`s the card so nothing holds the raw device.
 #
 #   sd_seed_wifi.sh --device /dev/sdX ( --ssid S --psk P [--priority N] [--hidden] \
 #                                       | --file NETWORKS.yaml )
@@ -19,12 +20,12 @@
 #   sd_seed_wifi.sh --device /dev/sdX --remove SSID
 #   sd_seed_wifi.sh --root /mnt/sdroot ...      # write to an already-mounted root
 #
-# --device is the WHOLE-disk card (/dev/sdX, /dev/mmcblk0, /dev/diskN on macOS); the
+# --device is the WHOLE-disk card (/dev/sdX, /dev/mmcblk0, /dev/disk4 on macOS); the
 # tool finds the ext4 root partition itself. If auto-detection can't (unusual
 # layout), point it straight at the partition with --partition /dev/sdX2.
 #
-# Leading arg (injected by the sh_binary): the runfiles path of a vendored e2cp, so
-# the rest of e2tools resolves beside it. Kept bash-3.2-safe (runs under system bash).
+# Leading arg (injected by the sh_binary): the runfiles path of a vendored debugfs.
+# Kept bash-3.2-safe (runs under system bash).
 set -uo pipefail
 
 # --- begin runfiles.bash initialization v3 ---
@@ -38,14 +39,11 @@ source "${RUNFILES_DIR:-/dev/null}/$f" 2>/dev/null ||
 
 die() { echo "sd_seed_wifi: $*" >&2; exit 1; }
 
-# Resolve the e2tools bin dir from the leading runfiles arg (rlocationpath of e2cp).
-[ "$#" -ge 1 ] || die "internal: missing e2tools runfiles path (run via the bazel target)"
-E2CP="$(rlocation "$1")" || die "cannot resolve e2tools in runfiles ($1)"
+# Resolve the debugfs binary from the leading runfiles arg (its rlocationpath).
+[ "$#" -ge 1 ] || die "internal: missing debugfs runfiles path (run via the bazel target)"
+DEBUGFS="$(rlocation "$1")" || die "cannot resolve debugfs in runfiles ($1)"
+[ -x "$DEBUGFS" ] || die "debugfs not executable ($DEBUGFS)"
 shift
-E2BIN="$(cd "$(dirname "$E2CP")" && pwd)"
-for t in e2cp e2mkdir e2ls e2rm; do
-  [ -x "$E2BIN/$t" ] || die "e2tools '$t' not found next to e2cp ($E2BIN)"
-done
 
 DEVICE="" PARTITION="" ROOT="" SSID="" PSK="" PRIORITY="" HIDDEN="no"
 FILE="" ACTION="add" REMOVE_SSID=""
@@ -61,7 +59,7 @@ while [ "$#" -gt 0 ]; do
     --file)      FILE="$2"; shift 2 ;;
     --list)      ACTION="list"; shift ;;
     --remove)    ACTION="remove"; REMOVE_SSID="$2"; shift 2 ;;
-    -h|--help)   sed -n '2,32p' "$0"; exit 0 ;;
+    -h|--help)   sed -n '2,33p' "$0"; exit 0 ;;
     *)           die "unknown arg: $1" ;;
   esac
 done
@@ -70,11 +68,11 @@ NM_DIR="/etc/NetworkManager/system-connections"
 
 # ---------------------------------------------------------------------------
 # Target resolution: either an already-mounted --root, or an ext4 partition we
-# drive with e2tools (found from --device, or given via --partition).
+# drive with debugfs (found from --device, or given via --partition).
 # ---------------------------------------------------------------------------
 MODE=""            # "root" | "e2"
 FS=""              # partition device node when MODE=e2
-SUDO=""            # "sudo" prefix for e2tools when the device isn't writable
+SUDO=""            # "sudo" prefix when the device isn't writable by this user
 
 if [ -n "$ROOT" ]; then
   MODE="root"
@@ -84,40 +82,39 @@ else
   MODE="e2"
 fi
 
-# e2() runs an e2tools command against $FS, elevating with sudo if needed.
-e2() { $SUDO "$E2BIN/$1" "${@:2}"; }
-
-# is_ext: does e2ls succeed on <part>:/  (true only for an ext2/3/4 filesystem)?
-is_ext() { $SUDO "$E2BIN/e2ls" "$1:/" >/dev/null 2>&1; }
-
 pick_sudo() {
   # Raw block-device access usually needs privilege; probe writability once.
-  local dev="$1"
-  if [ -w "$dev" ]; then SUDO=""; else
-    command -v sudo >/dev/null 2>&1 || die "no write access to $dev and sudo not found"
+  if [ -w "$1" ]; then SUDO=""; else
+    command -v sudo >/dev/null 2>&1 || die "no write access to $1 and sudo not found"
     SUDO="sudo"
   fi
 }
 
-resolve_partition() {
-  # Refuse to touch a partition that's currently mounted (writing under a live
-  # mount corrupts the fs). Linux-only check; macOS never mounts ext4.
-  if [ -r /proc/mounts ] && grep -q "^$1 " /proc/mounts; then
-    die "$1 is mounted — unmount it first (writing under a live mount corrupts ext4)"
-  fi
+# debugfs helpers. `ls -l /` lists entries on an ext fs and errors (empty stdout)
+# on anything else, so it doubles as the ext probe and the /nix (NixOS root) test.
+dbg_ls() { $SUDO "$DEBUGFS" -R "ls -l $2" "$1" 2>/dev/null; }
+is_ext() { dbg_ls "$1" / | grep -q . ; }
+has_nix() { dbg_ls "$1" / | grep -qw nix ; }
+
+# On macOS, free the raw device: unmount the whole card (the FAT firmware partition
+# auto-mounts; the ext4 one never does). No-op elsewhere.
+mac_unmount() {
+  [ "$(uname -s)" = "Darwin" ] || return 0
+  local disk="$1"
+  disk="$(printf '%s' "$disk" | sed -E 's/s[0-9]+$//')"  # /dev/disk4s2 -> /dev/disk4
+  $SUDO diskutil unmountDisk "$disk" >/dev/null 2>&1 || true
 }
 
 if [ "$MODE" = "e2" ]; then
   if [ -n "$PARTITION" ]; then
-    FS="$PARTITION"
-    pick_sudo "$FS"
+    FS="$PARTITION"; pick_sudo "$FS"; mac_unmount "$FS"
     is_ext "$FS" || die "$FS is not an ext filesystem (pass the ext4 ROOT partition)"
   else
-    pick_sudo "$DEVICE"
+    pick_sudo "$DEVICE"; mac_unmount "$DEVICE"
     # Candidate partition nodes by platform + base-name shape.
     base="$DEVICE"; sep=""
     case "$(uname -s)" in
-      Darwin) sep="s" ;;                                   # /dev/diskN -> /dev/diskNsM
+      Darwin) sep="s" ;;                                          # /dev/disk4 -> /dev/disk4sN
       *) case "$base" in *[0-9]) sep="p" ;; *) sep="" ;; esac ;;  # mmcblk0p1 vs sda1
     esac
     FS=""; ext_hits=""
@@ -126,21 +123,21 @@ if [ "$MODE" = "e2" ]; then
       [ -e "$cand" ] || continue
       if is_ext "$cand"; then
         ext_hits="$ext_hits $cand"
-        # Prefer the NixOS root: the ext partition that has a /nix dir.
-        if $SUDO "$E2BIN/e2ls" "$cand:/" 2>/dev/null | tr ' ' '\n' | grep -qx nix; then
-          FS="$cand"; break
-        fi
+        has_nix "$cand" && { FS="$cand"; break; }   # prefer the NixOS root (/nix)
       fi
     done
     if [ -z "$FS" ]; then
-      # No nix-bearing ext found; fall back to the sole ext partition, if unambiguous.
       set -- $ext_hits
       [ "$#" -eq 1 ] || die "could not identify the ext4 root on $DEVICE (candidates:${ext_hits:- none}); pass --partition /dev/…"
       FS="$1"
     fi
     echo "sd_seed_wifi: root partition -> $FS"
   fi
-  resolve_partition "$FS"
+  # Refuse a currently-mounted partition (Linux); writing under a live mount
+  # corrupts ext4. macOS never mounts ext4, and mac_unmount handled the card.
+  if [ -r /proc/mounts ] && grep -q "^$FS " /proc/mounts; then
+    die "$FS is mounted — unmount it first (writing under a live mount corrupts ext4)"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -150,7 +147,7 @@ fi
 # the same ssid replaces in place rather than accumulating duplicates.
 gen_uuid() { python3 -c 'import sys,uuid; print(uuid.uuid5(uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8"), "sbc-seed-"+sys.argv[1]))' "$1"; }
 
-# Emit the keyfile — byte-for-byte the shape nmcli writes for a wifi profile.
+# Emit the keyfile — the shape nmcli writes for a wifi profile.
 emit_profile() {
   local ssid="$1" psk="$2" prio="$3" hidden="$4"
   printf '[connection]\nid=seed-%s\nuuid=%s\ntype=wifi\nautoconnect-priority=%s\n\n' \
@@ -174,30 +171,45 @@ write_profile() {
   local dest="$NM_DIR/seed-$ssid.nmconnection"
   if [ "$MODE" = "root" ]; then
     local d="$ROOT$NM_DIR"
-    mkdir -p "$d" || die "mkdir $d failed (mount writable / run with privilege)"
-    install -m 0600 "$tmp" "$ROOT$dest" || die "write $ROOT$dest failed"
+    mkdir -p "$d" || { rm -f "$tmp"; die "mkdir $d failed (mount writable / run with privilege)"; }
+    install -m 0600 "$tmp" "$ROOT$dest" || { rm -f "$tmp"; die "write $ROOT$dest failed"; }
     chown 0:0 "$ROOT$dest" 2>/dev/null || echo "    note: could not chown root:root (re-run privileged; NM ignores non-root keyfiles)" >&2
   else
-    # e2mkdir has no -p; create each level, ignoring "already exists".
-    e2 e2mkdir "$FS:/etc" 2>/dev/null || true
-    e2 e2mkdir "$FS:/etc/NetworkManager" 2>/dev/null || true
-    e2 e2mkdir "$FS:$NM_DIR" 2>/dev/null || true
-    e2 e2rm "$FS:$dest" >/dev/null 2>&1 || true      # replace so re-seed updates the psk
-    e2 e2cp -P 0600 -O 0 -G 0 "$tmp" "$FS:$dest" || { rm -f "$tmp"; die "e2cp write to $FS:$dest failed"; }
+    # One debugfs batch: create the dir chain (mkdir on an existing dir is a
+    # non-fatal "File exists"), replace any prior file, write, and stamp
+    # root:root 0600 (0100600 = regular file + rw-------).
+    local cmds; cmds="$(mktemp)"
+    {
+      echo "mkdir /etc"
+      echo "mkdir /etc/NetworkManager"
+      echo "mkdir $NM_DIR"
+      echo "rm $dest"
+      echo "write $tmp $dest"
+      echo "sif $dest mode 0100600"
+      echo "sif $dest uid 0"
+      echo "sif $dest gid 0"
+    } > "$cmds"
+    $SUDO "$DEBUGFS" -w -f "$cmds" "$FS" >/dev/null 2>&1
+    rm -f "$cmds"
+    # debugfs returns 0 even when individual requests fail, so verify the inode.
+    dbg_stat "$dest" || { rm -f "$tmp"; die "debugfs write to $FS:$dest did not take"; }
   fi
   rm -f "$tmp"
   echo "    ok"
 }
 
+dbg_stat() { $SUDO "$DEBUGFS" -R "stat $1" "$FS" 2>/dev/null | grep -q "^Inode:"; }
+
 list_seeds() {
   if [ "$MODE" = "root" ]; then ls -l "$ROOT$NM_DIR" 2>/dev/null | grep 'seed-' || echo "  (none)"
-  else e2 e2ls -l "$FS:$NM_DIR/" 2>/dev/null | grep 'seed-' || echo "  (none)"; fi
+  else dbg_ls "$FS" "$NM_DIR" | grep 'seed-' || echo "  (none)"; fi
 }
 
 remove_seed() {
   local ssid="$1"; [ -n "$ssid" ] || die "--remove needs an SSID"
   local dest="$NM_DIR/seed-$ssid.nmconnection"
-  if [ "$MODE" = "root" ]; then rm -f "$ROOT$dest"; else e2 e2rm "$FS:$dest" || die "remove failed"; fi
+  if [ "$MODE" = "root" ]; then rm -f "$ROOT$dest"
+  else $SUDO "$DEBUGFS" -w -R "rm $dest" "$FS" >/dev/null 2>&1 || true; fi
   echo "removed seed-$ssid"
 }
 
