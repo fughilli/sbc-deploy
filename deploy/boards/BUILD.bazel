@@ -29,3 +29,12 @@ sbc_board(
     nixos_board = "raspberry-pi-02",
     modules = ["display-vc4"],
 )
+
+# The Pi Zero 2 W IS raspberry-pi-02 upstream (bcm2710a1 / Cortex-A53, the rpi02
+# kernel) — a discoverable alias by its marketing name. NB: the original Pi Zero W
+# (v1, BCM2835 / ARM11, armv6l) has NO board here — nixos-raspberrypi is aarch64-only
+# and exposes only pi-02/3/4/5, and mainline NixOS dropped armv6, so it can't build.
+alias(
+    name = "raspberry-pi-zero-2w",
+    actual = ":raspberry-pi-02",
+)
