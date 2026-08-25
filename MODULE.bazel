@@ -115,27 +115,23 @@ filegroup(
 )
 use_repo(nix_pkg, "nixpkgs_pv")
 
-# e2tools — read/write files inside an ext4 filesystem by device node, with NO
-# mount and NO root (uses libext2fs). Lets `sd_seed_wifi` add WiFi profiles to an
-# already-imaged card's ext4 root partition cross-platform, incl. macOS where ext4
-# can't be mounted at all. The `e2cp` filegroup gives the launcher one bin to
-# rlocationpath; `e2tools` carries the whole bin dir (e2mkdir/e2ls/e2rm) beside it.
+# e2fsprogs (debugfs) — read/write files inside an ext4 filesystem by device node,
+# with NO mount and NO root (uses libext2fs). Lets `sd_seed_wifi` add WiFi profiles
+# to an already-imaged card's ext4 root partition cross-platform. NB: use e2fsprogs,
+# NOT e2tools — nixpkgs marks e2tools linux-only (meta.platforms), so it won't even
+# evaluate on macOS (aarch64-darwin), whereas e2fsprogs IS available there. Take the
+# `bin` output so debugfs is present without the -dev/-man outputs.
 nix_pkg.attr(
-    name = "nixpkgs_e2tools",
-    attr = "e2tools",
+    name = "nixpkgs_e2fsprogs",
+    attr = "e2fsprogs.bin",
     build_file_content = """\
 package(default_visibility = ["//visibility:public"])
 
 filegroup(
-    name = "e2tools",
-    srcs = glob(["bin/*"]),
-)
-
-filegroup(
-    name = "e2cp",
-    srcs = ["bin/e2cp"],
+    name = "debugfs",
+    srcs = ["bin/debugfs"],
 )
 """,
     repo = "@nixpkgs",
 )
-use_repo(nix_pkg, "nixpkgs_e2tools")
+use_repo(nix_pkg, "nixpkgs_e2fsprogs")
