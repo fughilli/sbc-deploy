@@ -30,6 +30,7 @@ zstd_rlocationpath="$1"; shift        # "-" sentinel when not needed (e.g. build
 pv_rlocationpath="$1"; shift          # "-" sentinel when not needed
 board_rlocationpath="$1"; shift       # "-" sentinel when not needed (e.g. builder)
 builder_rlocationpath="$1"; shift     # "-" sentinel when using --framework-subdir
+build_data_count="$1"; shift          # count of generic build_data files that follow
 
 script="$(rlocation "$script_rlocationpath")" || {
   echo >&2 "ERROR: could not resolve deploy script ($script_rlocationpath) in runfiles"; exit 1; }
@@ -78,5 +79,22 @@ if [[ "$builder_rlocationpath" != "-" ]]; then
     echo >&2 "ERROR: could not resolve builder flake ($builder_rlocationpath) in runfiles"; exit 1; }
   export SBC_BUILDER_FLAKE
 fi
+
+# Generic build_data: the next $build_data_count args are runfiles paths of
+# arbitrary Bazel-built files. Resolve each to an absolute path and export a
+# SBC_BUILD_DATA manifest ("basename=abs;basename=abs") for mkSbcProject to parse
+# under --impure into `sbcBuildData`. Passed via args (not env) so it survives
+# `bazel run`, like the other lead-resolved inputs above.
+build_data_manifest=""
+while [ "${build_data_count:-0}" -gt 0 ]; do
+  bd_rp="$1"; shift
+  bd_abs="$(rlocation "$bd_rp")" || {
+    echo >&2 "ERROR: could not resolve build_data ($bd_rp) in runfiles"; exit 1; }
+  bd_name="${bd_abs##*/}"
+  if [ -n "$build_data_manifest" ]; then build_data_manifest="$build_data_manifest;"; fi
+  build_data_manifest="$build_data_manifest$bd_name=$bd_abs"
+  build_data_count=$((build_data_count - 1))
+done
+if [ -n "$build_data_manifest" ]; then export SBC_BUILD_DATA="$build_data_manifest"; fi
 
 exec "$bash_bin" "$script" "$@"

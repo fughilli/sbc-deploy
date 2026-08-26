@@ -127,9 +127,28 @@
           # See the cross-kernel override in the module list below.
           kernelPackagesAttr =
             "linuxPackages_rpi" + nixpkgs.lib.removePrefix "raspberry-pi-" resolvedBoard;
+
+          # Generic build_data seam: the launcher exports SBC_BUILD_DATA as a
+          # "basename=abspath;basename=abspath" manifest of Bazel-built files (see
+          # the sbc_application `build_data` attr). Parse it (getEnv, --impure)
+          # into an attrset keyed by basename and pass it to every appModule via
+          # specialArgs as `sbcBuildData`. Empty {} in pure eval / when unset.
+          envBuildData = builtins.getEnv "SBC_BUILD_DATA";
+          sbcBuildData =
+            if envBuildData == "" then { }
+            else builtins.listToAttrs (map
+              (entry:
+                let
+                  eq = nixpkgs.lib.splitString "=" entry;
+                  key = builtins.head eq;
+                  val = builtins.concatStringsSep "=" (builtins.tail eq);
+                in
+                { name = key; value = builtins.path { path = /. + val; name = key; }; })
+              (nixpkgs.lib.filter (e: e != "")
+                (nixpkgs.lib.splitString ";" envBuildData)));
         in
         nixos-raspberrypi.lib.nixosSystem {
-          specialArgs = inputs // { inherit self; };
+          specialArgs = inputs // { inherit self sbcBuildData; };
           modules = [
             ({ ... }: {
               imports = [

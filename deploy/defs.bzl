@@ -90,6 +90,7 @@ def sbc_application(
         project = None,
         framework = None,
         wifi_config_file = None,
+        build_data = None,
         detect_caps_cmd = None,
         visibility = None):
     """Create the three deploy-mode targets (+ keys) for one SBC application.
@@ -125,6 +126,15 @@ def sbc_application(
       wifi_config_file: label of a single YAML file listing WiFi networks (ssid /
         psk / priority / hidden) to auto-connect to. Converted to JSON at build
         time and baked into the image. Merges with any inline `sbcDeploy.wifi`.
+      build_data: list of labels (files/filegroups) to expose to the flake build
+        as a generic data dependency. Each file is added to the deploy target's
+        runfiles; the launcher resolves their absolute paths and exports a
+        `SBC_BUILD_DATA` manifest, which mkSbcProject parses (under `--impure`)
+        into `sbcBuildData` — an attrset keyed by BASENAME, passed to every
+        appModule via specialArgs. A module reads e.g.
+        `{ sbcBuildData, ... }: { … = sbcBuildData."my_file.bin"; }`. This keeps
+        Bazel the single source of build artifacts (no vendoring into the flake
+        tree). Basenames must be unique across the list.
       detect_caps_cmd: optional shell command run ON the board by the `.update`
         target to report the capabilities the hardware physically has, as SBC_*
         KEY=VALUE lines (e.g. `lsusb | grep -q 0925:3881 && echo SBC_ANALYZER=1`).
@@ -160,6 +170,13 @@ def sbc_application(
         wifi_data = [":" + json_out]
         wifi_lead = "$(rlocationpath :{})".format(json_out)
 
+    # Generic build_data: arbitrary Bazel-built files exposed to the flake. Their
+    # runfiles paths ride the lead args (a count, then N paths) so the launcher
+    # can resolve + export them as SBC_BUILD_DATA without relying on env
+    # forwarding (bazel run only forwards its own client env to the deploy).
+    build_data = build_data or []
+    build_data_leads = ["$(rlocationpath {})".format(f) for f in build_data]
+
     # The launcher resolves these runfiles paths, then execs bash on the script.
     # rlocationpath is repo-qualified, so it works from any consumer. Order:
     # script, bash, wifi-json (or "-"), zstd, pv, board-file, builder-flake. The
@@ -175,12 +192,13 @@ def sbc_application(
         "$(rlocationpath {})".format(_PV),
         "$(rlocationpath {})".format(board),
         "$(rlocationpath {})".format(_BUILDER),
-    ]
+        str(len(build_data)),
+    ] + build_data_leads
 
     # _BUILDER (flake.nix) must be listed directly so its $(rlocationpath) in
     # `lead` has a declared prerequisite; _BUILDER_SRCS carries flake.lock into
     # runfiles beside it so the realised path: flake evaluates purely.
-    data = [_SCRIPT, _BASH, _ZSTD, _PV, _RUNFILES, board, _BUILDER, _BUILDER_SRCS] + wifi_data
+    data = [_SCRIPT, _BASH, _ZSTD, _PV, _RUNFILES, board, _BUILDER, _BUILDER_SRCS] + wifi_data + build_data
 
     def _target(suffix, argv):
         sh_binary(
@@ -236,6 +254,7 @@ def _tool_target(name, subcommand, framework, visibility):
             "-",  # no pv
             "-",  # no board definition
             "-",  # no builder flake (this target uses --framework-subdir)
+            "0",  # no build_data
             subcommand,
             "--framework-subdir",
             framework,
