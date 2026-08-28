@@ -598,6 +598,34 @@ cmd_deploy() {
     die "board at $DEPLOY_HOST has no committed identity (/var/lib/sbc/hostname) and no --hostname was given. Re-run with --hostname <name> to commission it in place, or (re)flash with image_sd --hostname <name>."
   fi
 
+  # Hardware guard. The closure we're about to build/install targets board
+  # $SBC_BOARD (baked by the sbc_application target / --board), but the kernel,
+  # firmware and device tree are board-SPECIFIC: installing a Pi 5 closure onto a
+  # Pi 3 (or vice versa) writes an incompatible kernel and BRICKS THE NEXT BOOT.
+  # `update` avoids this by choosing the board FROM the hardware; deploy_live is
+  # the low-level primitive where the operator picks the target, so it's the path
+  # that can mismatch — verify the target's real board here and REFUSE a mismatch
+  # (reads the same /proc/device-tree/model `update` does). This runs BEFORE the
+  # closure build so a mismatch fails fast. Escape hatch for a deliberate
+  # cross-board write (e.g. recovery): SBC_SKIP_BOARD_CHECK=1.
+  if [[ -n "${SBC_BOARD:-}" && "${SBC_SKIP_BOARD_CHECK:-0}" != 1 ]]; then
+    local hw_model hw_board
+    # shellcheck disable=SC2086
+    hw_model="$(ssh $ssh_opts "$target" 'cat /proc/device-tree/model 2>/dev/null | tr -d "\0"' || true)"
+    if [[ -z "$hw_model" ]]; then
+      echo "==> WARN: could not read /proc/device-tree/model from $DEPLOY_HOST; cannot verify it is a '$SBC_BOARD' — proceeding (set SBC_SKIP_BOARD_CHECK=1 to silence)." >&2
+    else
+      hw_board="$(board_from_model "$hw_model")"
+      if [[ -z "$hw_board" ]]; then
+        echo "==> WARN: unrecognized board model '$hw_model' (add it to board_from_model); cannot verify against SBC_BOARD=$SBC_BOARD — proceeding." >&2
+      elif [[ "$hw_board" != "$SBC_BOARD" ]]; then
+        die "HARDWARE MISMATCH: $DEPLOY_HOST is a '$hw_model' (board '$hw_board') but this closure targets board '$SBC_BOARD'. Installing it would write an incompatible kernel/firmware/device-tree and brick the next boot. Deploy the matching '$hw_board' target, or use \`update\` (auto-detects the board), or force with SBC_SKIP_BOARD_CHECK=1."
+      else
+        echo "==> Board check: $DEPLOY_HOST is a '$hw_model' — matches SBC_BOARD=$hw_board."
+      fi
+    fi
+  fi
+
   prepare_backend "path:${flake_dir}#nixosConfigurations.${attr}.config.system.build.toplevel"
 
   # 1. Build the system closure (aarch64-linux; goes to the linux builder).
