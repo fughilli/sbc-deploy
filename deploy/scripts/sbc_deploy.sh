@@ -329,6 +329,20 @@ repo_root() {
   fi
 }
 
+# The directory nix builds the flake from. When the consumer declared flake_srcs,
+# the launcher staged a hermetic TreeArtifact and exported $SBC_FLAKE_DIR — build
+# from THAT (only the intended sources, deterministic). Otherwise fall back to the
+# live workspace subdir (legacy, non-hermetic: a mutable file under the flake dir
+# can leak into the narHash). Only the nix build uses this; repo-root-relative
+# bookkeeping (secrets, gc roots) still keys off $FLAKE_SUBDIR.
+flake_build_dir() {
+  if [[ -n "${SBC_FLAKE_DIR:-}" ]]; then
+    echo "$SBC_FLAKE_DIR"
+  else
+    echo "$(repo_root)/$FLAKE_SUBDIR"
+  fi
+}
+
 # --- argument parsing (recognized flags consumed, rest passed to nix) -------
 parse_common_flags() {
   local a
@@ -449,7 +463,7 @@ cmd_image() {
   [[ -n "$FLAKE_SUBDIR" ]] || die "--flake-subdir not set (the sbc_deploy macro sets this)."
   command -v nix >/dev/null 2>&1 || die "'nix' not found. Build the image on a host with Nix (flakes enabled)."
 
-  local flake_dir; flake_dir="$(repo_root)/$FLAKE_SUBDIR"
+  local flake_dir; flake_dir="$(flake_build_dir)"
   key_paths
 
   echo "==> Ensuring deploy SSH key exists (public half is baked into the image)"
@@ -560,7 +574,7 @@ cmd_deploy() {
   command -v ssh >/dev/null 2>&1 || die "'ssh' not found."
 
   local flake_dir attr target
-  flake_dir="$(repo_root)/$FLAKE_SUBDIR"
+  flake_dir="$(flake_build_dir)"
   # Which config to build (the variant, baked by the target); NOT the identity —
   # that's $SBC_HOSTNAME_OVERRIDE from --hostname, applied above for all modes.
   attr="${NIXOS_ATTR:-$PROJECT}"
