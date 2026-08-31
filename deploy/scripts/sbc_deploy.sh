@@ -337,7 +337,21 @@ repo_root() {
 # bookkeeping (secrets, gc roots) still keys off $FLAKE_SUBDIR.
 flake_build_dir() {
   if [[ -n "${SBC_FLAKE_DIR:-}" ]]; then
-    echo "$SBC_FLAKE_DIR"
+    # nix caches `path:` flake sources keyed on the PATH, but Bazel gives the
+    # staged TreeArtifact a STABLE bazel-out path across deploys while its content
+    # changes — so nix can serve a stale eval (and pin an old daemon). Copy it to a
+    # CONTENT-ADDRESSED scratch dir: identical content reuses the same path (eval
+    # cache hit, fast), any change lands on a fresh path (never stale). Content is
+    # deterministic, so the derivations still are.
+    local h dst
+    h="$(cd "$SBC_FLAKE_DIR" && find . -type f -exec sha256sum {} + | LC_ALL=C sort | sha256sum | cut -c1-32)"
+    dst="${TMPDIR:-/tmp}/sbc-flakesrc-$h"
+    if [[ ! -e "$dst" ]]; then
+      rm -rf "$dst.partial.$$"
+      cp -rL "$SBC_FLAKE_DIR" "$dst.partial.$$"
+      mv "$dst.partial.$$" "$dst" 2>/dev/null || rm -rf "$dst.partial.$$"  # lost a race; another copy won
+    fi
+    echo "$dst"
   else
     echo "$(repo_root)/$FLAKE_SUBDIR"
   fi
