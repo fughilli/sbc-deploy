@@ -329,6 +329,34 @@ repo_root() {
   fi
 }
 
+# The directory nix builds the flake from. When the consumer declared flake_srcs,
+# the launcher staged a hermetic TreeArtifact and exported $SBC_FLAKE_DIR — build
+# from THAT (only the intended sources, deterministic). Otherwise fall back to the
+# live workspace subdir (legacy, non-hermetic: a mutable file under the flake dir
+# can leak into the narHash). Only the nix build uses this; repo-root-relative
+# bookkeeping (secrets, gc roots) still keys off $FLAKE_SUBDIR.
+flake_build_dir() {
+  if [[ -n "${SBC_FLAKE_DIR:-}" ]]; then
+    # nix caches `path:` flake sources keyed on the PATH, but Bazel gives the
+    # staged TreeArtifact a STABLE bazel-out path across deploys while its content
+    # changes — so nix can serve a stale eval (and pin an old daemon). Copy it to a
+    # CONTENT-ADDRESSED scratch dir: identical content reuses the same path (eval
+    # cache hit, fast), any change lands on a fresh path (never stale). Content is
+    # deterministic, so the derivations still are.
+    local h dst
+    h="$(cd "$SBC_FLAKE_DIR" && find . -type f -exec sha256sum {} + | LC_ALL=C sort | sha256sum | cut -c1-32)"
+    dst="${TMPDIR:-/tmp}/sbc-flakesrc-$h"
+    if [[ ! -e "$dst" ]]; then
+      rm -rf "$dst.partial.$$"
+      cp -rL "$SBC_FLAKE_DIR" "$dst.partial.$$"
+      mv "$dst.partial.$$" "$dst" 2>/dev/null || rm -rf "$dst.partial.$$"  # lost a race; another copy won
+    fi
+    echo "$dst"
+  else
+    echo "$(repo_root)/$FLAKE_SUBDIR"
+  fi
+}
+
 # --- argument parsing (recognized flags consumed, rest passed to nix) -------
 parse_common_flags() {
   local a
@@ -449,7 +477,7 @@ cmd_image() {
   [[ -n "$FLAKE_SUBDIR" ]] || die "--flake-subdir not set (the sbc_deploy macro sets this)."
   command -v nix >/dev/null 2>&1 || die "'nix' not found. Build the image on a host with Nix (flakes enabled)."
 
-  local flake_dir; flake_dir="$(repo_root)/$FLAKE_SUBDIR"
+  local flake_dir; flake_dir="$(flake_build_dir)"
   key_paths
 
   echo "==> Ensuring deploy SSH key exists (public half is baked into the image)"
@@ -560,7 +588,7 @@ cmd_deploy() {
   command -v ssh >/dev/null 2>&1 || die "'ssh' not found."
 
   local flake_dir attr target
-  flake_dir="$(repo_root)/$FLAKE_SUBDIR"
+  flake_dir="$(flake_build_dir)"
   # Which config to build (the variant, baked by the target); NOT the identity —
   # that's $SBC_HOSTNAME_OVERRIDE from --hostname, applied above for all modes.
   attr="${NIXOS_ATTR:-$PROJECT}"
@@ -596,6 +624,34 @@ cmd_deploy() {
     export SBC_HOSTNAME_OVERRIDE="$HOSTNAME_ATTR"
   else
     die "board at $DEPLOY_HOST has no committed identity (/var/lib/sbc/hostname) and no --hostname was given. Re-run with --hostname <name> to commission it in place, or (re)flash with image_sd --hostname <name>."
+  fi
+
+  # Hardware guard. The closure we're about to build/install targets board
+  # $SBC_BOARD (baked by the sbc_application target / --board), but the kernel,
+  # firmware and device tree are board-SPECIFIC: installing a Pi 5 closure onto a
+  # Pi 3 (or vice versa) writes an incompatible kernel and BRICKS THE NEXT BOOT.
+  # `update` avoids this by choosing the board FROM the hardware; deploy_live is
+  # the low-level primitive where the operator picks the target, so it's the path
+  # that can mismatch — verify the target's real board here and REFUSE a mismatch
+  # (reads the same /proc/device-tree/model `update` does). This runs BEFORE the
+  # closure build so a mismatch fails fast. Escape hatch for a deliberate
+  # cross-board write (e.g. recovery): SBC_SKIP_BOARD_CHECK=1.
+  if [[ -n "${SBC_BOARD:-}" && "${SBC_SKIP_BOARD_CHECK:-0}" != 1 ]]; then
+    local hw_model hw_board
+    # shellcheck disable=SC2086
+    hw_model="$(ssh $ssh_opts "$target" 'cat /proc/device-tree/model 2>/dev/null | tr -d "\0"' || true)"
+    if [[ -z "$hw_model" ]]; then
+      echo "==> WARN: could not read /proc/device-tree/model from $DEPLOY_HOST; cannot verify it is a '$SBC_BOARD' — proceeding (set SBC_SKIP_BOARD_CHECK=1 to silence)." >&2
+    else
+      hw_board="$(board_from_model "$hw_model")"
+      if [[ -z "$hw_board" ]]; then
+        echo "==> WARN: unrecognized board model '$hw_model' (add it to board_from_model); cannot verify against SBC_BOARD=$SBC_BOARD — proceeding." >&2
+      elif [[ "$hw_board" != "$SBC_BOARD" ]]; then
+        die "HARDWARE MISMATCH: $DEPLOY_HOST is a '$hw_model' (board '$hw_board') but this closure targets board '$SBC_BOARD'. Installing it would write an incompatible kernel/firmware/device-tree and brick the next boot. Deploy the matching '$hw_board' target, or use \`update\` (auto-detects the board), or force with SBC_SKIP_BOARD_CHECK=1."
+      else
+        echo "==> Board check: $DEPLOY_HOST is a '$hw_model' — matches SBC_BOARD=$hw_board."
+      fi
+    fi
   fi
 
   prepare_backend "path:${flake_dir}#nixosConfigurations.${attr}.config.system.build.toplevel"

@@ -30,6 +30,7 @@ zstd_rlocationpath="$1"; shift        # "-" sentinel when not needed (e.g. build
 pv_rlocationpath="$1"; shift          # "-" sentinel when not needed
 board_rlocationpath="$1"; shift       # "-" sentinel when not needed (e.g. builder)
 builder_rlocationpath="$1"; shift     # "-" sentinel when using --framework-subdir
+staged_flake_rlocationpath="$1"; shift # "-" sentinel unless flake_srcs was declared
 build_data_count="$1"; shift          # count of generic build_data files that follow
 
 script="$(rlocation "$script_rlocationpath")" || {
@@ -78,6 +79,16 @@ if [[ "$builder_rlocationpath" != "-" ]]; then
   SBC_BUILDER_FLAKE="$(rlocation "$builder_rlocationpath")" || {
     echo >&2 "ERROR: could not resolve builder flake ($builder_rlocationpath) in runfiles"; exit 1; }
   export SBC_BUILDER_FLAKE
+fi
+
+# Hermetic flake source (when the consumer set flake_srcs): a TreeArtifact holding
+# exactly the declared flake files, materialised by Bazel. Resolve its absolute
+# runfiles path and export it; the script builds `path:$SBC_FLAKE_DIR#…` from THIS
+# instead of the live workspace, so the flake source is deterministic.
+if [[ "$staged_flake_rlocationpath" != "-" ]]; then
+  SBC_FLAKE_DIR="$(rlocation "$staged_flake_rlocationpath")" || {
+    echo >&2 "ERROR: could not resolve staged flake source ($staged_flake_rlocationpath) in runfiles"; exit 1; }
+  export SBC_FLAKE_DIR
 fi
 
 # Generic build_data: the next $build_data_count args are runfiles paths of

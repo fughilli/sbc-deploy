@@ -50,6 +50,67 @@ resolves.
 
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 
+def _staged_flake_impl(ctx):
+    """Copy the declared flake sources into a TreeArtifact, stripping the
+    workspace-relative flake-subdir prefix so flake.nix lands at the tree root.
+
+    This is the HERMETIC source for the nix build: only the files Bazel is told
+    about are exposed (no `.bazelisk/`, no editor churn, nothing else in the live
+    workspace), and the copy is a real materialised directory — so `nix build
+    path:<tree>` reads deterministic content and the same inputs always yield the
+    same store path with the same bytes. Pointing nix at the live workspace
+    instead let mutable files (a Bazelisk cache rewritten during the deploy) leak
+    into the flake narHash, producing colliding store paths with stale content."""
+    out = ctx.actions.declare_directory(ctx.label.name + ".flakesrc")
+    prefix = ctx.attr.flake_subdir.rstrip("/") + "/"
+    pairs = []
+    for f in ctx.files.srcs:
+        sp = f.short_path
+        if not sp.startswith(prefix):
+            # A file outside the flake subdir (e.g. an external-repo input) has no
+            # sensible place in the tree; skip it rather than clobber the root.
+            continue
+        pairs.append(f.path + "\t" + sp[len(prefix):])
+    manifest = ctx.actions.declare_file(ctx.label.name + ".flakesrc.manifest")
+    ctx.actions.write(manifest, "".join([p + "\n" for p in pairs]))
+    ctx.actions.run_shell(
+        inputs = ctx.files.srcs + [manifest],
+        outputs = [out],
+        arguments = [out.path, manifest.path],
+        command = """
+set -euo pipefail
+out="$1"; manifest="$2"
+tab="$(printf '\\t')"
+while IFS="$tab" read -r src dest; do
+  [ -n "${dest:-}" ] || continue
+  mkdir -p "$out/$(dirname "$dest")"
+  cp -f "$src" "$out/$dest"
+done < "$manifest"
+""",
+        mnemonic = "StageFlakeSrc",
+        progress_message = "Staging hermetic flake source %{label}",
+    )
+    return [DefaultInfo(files = depset([out]))]
+
+_staged_flake = rule(
+    implementation = _staged_flake_impl,
+    attrs = {
+        "srcs": attr.label_list(
+            allow_files = True,
+            mandatory = True,
+            doc = "Every file the flake build reads (flake.nix/.lock, the nix/ " +
+                  "modules, the Go module). Declared explicitly so only intended " +
+                  "sources are exposed — the whole point of the hermetic staging.",
+        ),
+        "flake_subdir": attr.string(
+            mandatory = True,
+            doc = "Workspace-relative dir holding flake.nix; stripped from each " +
+                  "src's path so the staged tree is rooted at the flake.",
+        ),
+    },
+    doc = "Materialise the flake sources into a hermetic TreeArtifact for nix.",
+)
+
 # Label() captures this .bzl file's own repo, so these resolve to @sbc_deploy /
 # its deps no matter which repo/package calls the macro.
 _LAUNCHER = Label("//deploy:scripts/launch.sh")
@@ -91,6 +152,7 @@ def sbc_application(
         framework = None,
         wifi_config_file = None,
         build_data = None,
+        flake_srcs = None,
         detect_caps_cmd = None,
         visibility = None):
     """Create the three deploy-mode targets (+ keys) for one SBC application.
@@ -135,6 +197,16 @@ def sbc_application(
         `{ sbcBuildData, ... }: { … = sbcBuildData."my_file.bin"; }`. This keeps
         Bazel the single source of build artifacts (no vendoring into the flake
         tree). Basenames must be unique across the list.
+      flake_srcs: list of labels (files/filegroups) enumerating EVERY file the
+        flake build reads — flake.nix/.lock, the nix/ modules, the whole Go
+        module. When set, Bazel stages exactly these into a hermetic TreeArtifact
+        (rooted at the flake, `flake`-prefix stripped) and the deploy points `nix
+        build path:` at THAT tree instead of the live workspace. This is what
+        makes a redeploy deterministic: nothing outside the declared set is
+        exposed, so a Bazelisk cache or editor scratch file mutated in the
+        workspace during the deploy can't leak into the flake narHash and pin a
+        stale, colliding store path. Omit to keep the legacy behaviour (nix reads
+        `$BUILD_WORKSPACE_DIRECTORY/<flake>` directly — simpler, non-hermetic).
       detect_caps_cmd: optional shell command run ON the board by the `.update`
         target to report the capabilities the hardware physically has, as SBC_*
         KEY=VALUE lines (e.g. `lsusb | grep -q 0925:3881 && echo SBC_ANALYZER=1`).
@@ -177,6 +249,20 @@ def sbc_application(
     build_data = build_data or []
     build_data_leads = ["$(rlocationpath {})".format(f) for f in build_data]
 
+    # Hermetic flake source: stage the declared srcs into a TreeArtifact and point
+    # the nix build at THAT (via $SBC_FLAKE_DIR), never the mutable workspace. "-"
+    # sentinel keeps the legacy workspace-path behaviour when flake_srcs is unset.
+    staged_flake_lead = "-"
+    staged_data = []
+    if flake_srcs:
+        _staged_flake(
+            name = name + "_flakesrc",
+            srcs = flake_srcs,
+            flake_subdir = flake,
+        )
+        staged_data = [":" + name + "_flakesrc"]
+        staged_flake_lead = "$(rlocationpath :{}_flakesrc)".format(name)
+
     # The launcher resolves these runfiles paths, then execs bash on the script.
     # rlocationpath is repo-qualified, so it works from any consumer. Order:
     # script, bash, wifi-json (or "-"), zstd, pv, board-file, builder-flake. The
@@ -192,13 +278,14 @@ def sbc_application(
         "$(rlocationpath {})".format(_PV),
         "$(rlocationpath {})".format(board),
         "$(rlocationpath {})".format(_BUILDER),
+        staged_flake_lead,
         str(len(build_data)),
     ] + build_data_leads
 
     # _BUILDER (flake.nix) must be listed directly so its $(rlocationpath) in
     # `lead` has a declared prerequisite; _BUILDER_SRCS carries flake.lock into
     # runfiles beside it so the realised path: flake evaluates purely.
-    data = [_SCRIPT, _BASH, _ZSTD, _PV, _RUNFILES, board, _BUILDER, _BUILDER_SRCS] + wifi_data + build_data
+    data = [_SCRIPT, _BASH, _ZSTD, _PV, _RUNFILES, board, _BUILDER, _BUILDER_SRCS] + wifi_data + build_data + staged_data
 
     def _target(suffix, argv):
         sh_binary(
@@ -254,6 +341,7 @@ def _tool_target(name, subcommand, framework, visibility):
             "-",  # no pv
             "-",  # no board definition
             "-",  # no builder flake (this target uses --framework-subdir)
+            "-",  # no staged flake source (uses --framework-subdir)
             "0",  # no build_data
             subcommand,
             "--framework-subdir",
