@@ -343,14 +343,30 @@ flake_build_dir() {
     # CONTENT-ADDRESSED scratch dir: identical content reuses the same path (eval
     # cache hit, fast), any change lands on a fresh path (never stale). Content is
     # deterministic, so the derivations still are.
-    local h dst
+    local h base dst
+    # Resolve the scratch base to its PHYSICAL path first. On macOS $TMPDIR is under
+    # /var/folders/… and /var is a symlink to /private/var; nix refuses a `path:` flake
+    # input whose path traverses a symlink ("error: path '…/var…' is a symlink"). pwd -P
+    # canonicalizes it so the staged flake dir is symlink-free.
+    base="$(cd "${TMPDIR:-/tmp}" 2>/dev/null && pwd -P)" || base="/tmp"
     h="$(cd "$SBC_FLAKE_DIR" && find . -type f -exec sha256sum {} + | LC_ALL=C sort | sha256sum | cut -c1-32)"
-    dst="${TMPDIR:-/tmp}/sbc-flakesrc-$h"
+    dst="$base/sbc-flakesrc-$h"
     if [[ ! -e "$dst" ]]; then
       rm -rf "$dst.partial.$$"
       cp -rL "$SBC_FLAKE_DIR" "$dst.partial.$$"
-      mv "$dst.partial.$$" "$dst" 2>/dev/null || rm -rf "$dst.partial.$$"  # lost a race; another copy won
+      # cp -rL preserves the source mode, and the Bazel-staged TreeArtifact is read-only
+      # (dirs r-xr-xr-x). macOS rename(2) needs write permission on the directory being
+      # moved, so without this the mv below fails on EVERY run, and the fallback rm can't
+      # unlink from the read-only dirs — leaving a half-staged dir while the function
+      # still returned $dst, so nix got a path that was never created ("does not exist").
+      chmod -R u+w "$dst.partial.$$"
+      if [[ -e "$dst" ]]; then
+        rm -rf "$dst.partial.$$"  # another run won the race; use theirs
+      else
+        mv "$dst.partial.$$" "$dst" 2>/dev/null || rm -rf "$dst.partial.$$"
+      fi
     fi
+    [[ -d "$dst" ]] || die "failed to stage the flake source at $dst (see cp/mv errors above)"
     echo "$dst"
   else
     echo "$(repo_root)/$FLAKE_SUBDIR"
