@@ -43,6 +43,13 @@ bail() {
 [ "$(id -u)" -eq 0 ] || fail "must run as root"
 [ -e "$TOPLEVEL" ] || fail "baked system closure not found at $TOPLEVEL"
 
+# Stop kernel messages from printing over the curses UI, and reset the terminal
+# so the first whiptail screen isn't drawn on top of the boot log. (The ISO also
+# lowers boot.consoleLogLevel and disallocates the VT via the systemd unit; this
+# is the belt-and-suspenders from inside the script.)
+dmesg --console-level 1 >/dev/null 2>&1 || dmesg -n 1 >/dev/null 2>&1 || true
+printf '\033c' 2>/dev/null || true   # RIS: reset terminal + clear scrollback
+
 # --- 1. choose the target disk ------------------------------------------------
 # Identify the installer's OWN boot medium (the USB stick) so we never offer it as
 # a target — installing onto the disk you booted from is always wrong. The live

@@ -90,6 +90,10 @@ in
   # the installed system carries the same param (see nix/modules/x86-target.nix).
   boot.kernelParams = [ "nomodeset" ];
 
+  # Keep kernel chatter off the console so it doesn't scribble over the curses UI
+  # (the installer also runs `dmesg -n 1` + resets the terminal before drawing).
+  boot.consoleLogLevel = 3;
+
   # A recognisable artifact. mkForce beats installation-cd's mkImageMediaOverride.
   isoImage.isoName = lib.mkForce "sbc-install-${hostName}.iso";
 
@@ -114,12 +118,16 @@ in
     serviceConfig = {
       Type = "idle";
       ExecStart = "${sbcInstall}/bin/sbc-install";
-      StandardInput = "tty";
+      # tty-force acquires tty1 immediately instead of waiting — which is what
+      # made systemd print "Press Enter to activate this console." before the UI.
+      StandardInput = "tty-force";
       StandardOutput = "tty";
       StandardError = "journal";
       TTYPath = "/dev/tty1";
       TTYReset = true;
-      TTYVHangup = true;
+      # Fully clear the VC (drops the boot-log scrollback) so the first whiptail
+      # screen isn't drawn on top of kernel/boot messages.
+      TTYVTDisallocate = true;
       # The script itself handles cancel/failure (drops to a shell); don't loop.
       Restart = "no";
     };
