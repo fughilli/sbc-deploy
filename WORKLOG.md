@@ -95,6 +95,36 @@ The core framework is proven end-to-end on hardware (see above). Remaining:
 
 ## Log
 
+### 2026-09-09 — installer UX: baked deploy key + SSH, copy progress, nomodeset
+
+Field-hardening from the first real amd64 install (an AMD Ryzen mini PC). Three
+fixes, all in the installer ISO / target:
+
+- **nomodeset by default.** The Ryzen box's console garbled once amdgpu KMS took
+  over after stage-2 (EFI framebuffer fine, then a bad mode); `nomodeset` on the
+  boot cmdline fixed it (confirmed on hardware). Baked into both
+  `nix/installer/iso.nix` (installer) and `nix/modules/x86-target.nix` (installed
+  system) — a headless appliance needs no KMS.
+- **Deploy key + reachable sshd in the live installer.** With the console
+  unusable pre-nomodeset, driving the install meant a painful blind dance
+  (manual sshd on an alt port, PAM-broken passwd, netcat-ing keys, read-only
+  /etc). Now iso.nix bakes the deploy key into root's authorized_keys (same
+  $SBC_DEPLOY_PUBKEY_FILE seam as ssh-deploy.nix), enables sshd +
+  openFirewall, and advertises mDNS as `<host>-installer.local`. So:
+  `ssh -i secrets/deploy_key root@amd-rig-installer.local` into the live
+  installer, no console needed.
+- **Copy progress gauge.** `nixos-install` was inscrutable. sbc-install.sh now
+  runs it in the background (log → /tmp/sbc-install.log, tailable over SSH) and
+  drives a whiptail `--gauge` from copied-vs-total store-path count
+  (`nix-store -qR` for the total). Added `nix` to the installer's tool PATH for
+  nix-store.
+
+**Verified in-container:** bash -n; nix-instantiate --parse iso.nix +
+x86-target.nix; bazel build of the installer target. **NOT verified on hardware
+yet** (this container has no x86 nix): the baked-key SSH path, the gauge math
+against a real copy, and that installation-cd honours the added openssh/avahi/
+authorizedKeys without conflict. Next real install is the test.
+
 ### 2026-09-09 — amd64: auto-managed x86_64-linux builder VM (Apple Silicon)
 
 Building the amd64 installer ISO on an Apple-Silicon Mac failed: the managed

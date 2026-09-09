@@ -107,10 +107,39 @@ mkdir -p /mnt/boot
 mount "$ESP" /mnt/boot          || fail "mounting $ESP at /mnt/boot failed"
 
 # --- 4. install (offline) + reboot --------------------------------------------
-echo "==> Installing NixOS from the baked closure (offline). This can take a few minutes…"
-if ! nixos-install --system "$TOPLEVEL" --no-root-passwd --no-channel-copy --root /mnt; then
+# The bulk of the install is copying the baked closure to the new root, which is
+# otherwise inscrutable. Show a whiptail progress gauge driven by how many of the
+# closure's store paths have landed in /mnt/nix/store vs the total. nixos-install
+# runs in the background; its full output goes to a log you can tail over SSH
+# (ssh root@<host>-installer.local: `tail -f /tmp/sbc-install.log`).
+total_paths="$(nix-store -qR "$TOPLEVEL" 2>/dev/null | wc -l | tr -d ' ')"
+[ "${total_paths:-0}" -gt 0 ] || total_paths=1
+
+echo "==> Installing NixOS from the baked closure (offline): ${total_paths} store paths → ${DEV}"
+nixos-install --system "$TOPLEVEL" --no-root-passwd --no-channel-copy --root /mnt \
+  >/tmp/sbc-install.log 2>&1 &
+install_pid=$!
+
+# Feed percentage + a live message to a whiptail gauge until the install exits.
+{
+  while kill -0 "$install_pid" 2>/dev/null; do
+    copied="$(ls /mnt/nix/store 2>/dev/null | wc -l | tr -d ' ')"
+    pct=$(( copied * 100 / total_paths ))
+    [ "$pct" -gt 100 ] && pct=100
+    printf 'XXX\n%d\nCopying the system to %s…\n  %s / %s store paths\nXXX\n' \
+      "$pct" "$DEV" "$copied" "$total_paths"
+    sleep 2
+  done
+  printf 'XXX\n100\nFinalizing (bootloader + activation)…\nXXX\n'
+} | whiptail --title "$BT" --gauge "Installing ${TARGET_HOST} onto ${DEV}…" 10 74 0
+
+wait "$install_pid"
+install_rc=$?
+if [ "$install_rc" -ne 0 ]; then
   umount -R /mnt 2>/dev/null || true
-  fail "nixos-install failed"
+  echo "---- last 40 lines of /tmp/sbc-install.log ----" >&2
+  tail -n 40 /tmp/sbc-install.log >&2 2>/dev/null || true
+  fail "nixos-install failed (rc=$install_rc); full log at /tmp/sbc-install.log"
 fi
 
 umount -R /mnt 2>/dev/null || true

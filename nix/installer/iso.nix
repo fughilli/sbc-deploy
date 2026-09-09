@@ -28,9 +28,28 @@ let
     e2fsprogs # mkfs.ext4
     parted # partprobe
     newt # whiptail
+    nix # nix-store (closure size for the copy progress gauge)
     nixos-install-tools # nixos-install
     bashInteractive # the drop-to-a-shell fallback
   ];
+
+  # The deploy public key, read at eval from the same env seam as the target's
+  # ssh-deploy module ($SBC_DEPLOY_PUBKEY_FILE, exported by the deploy script's
+  # cmd_image before the --impure build). Baking it into the LIVE installer means
+  # you can SSH into the running installer from your workstation to watch/drive an
+  # install — no console needed (see the AMD-GPU console saga). Empty when built
+  # without keys; then the installer just has no authorized key (sshd still up).
+  deployPubkeyFile = builtins.getEnv "SBC_DEPLOY_PUBKEY_FILE";
+  deployKeys =
+    lib.optional (deployPubkeyFile != "" && builtins.pathExists (/. + deployPubkeyFile))
+      (lib.strings.trim (builtins.readFile (/. + deployPubkeyFile)));
+
+  # The installer advertises itself over mDNS as <hostname>-installer.local, using
+  # the same hostname the target will take (the --hostname override wins, else the
+  # baked hostName) so it's predictable: `ssh root@amd-rig-installer.local`.
+  hostnameOverride = builtins.getEnv "SBC_HOSTNAME_OVERRIDE";
+  installerHostName =
+    (if hostnameOverride != "" then hostnameOverride else hostName) + "-installer";
 
   # The installer, with the build-time constants substituted in: the store path
   # of the baked target closure (@toplevel@), the target hostname (@host@), and
@@ -48,6 +67,28 @@ in
   system.extraDependencies = [ targetToplevel ];
 
   environment.systemPackages = [ sbcInstall ];
+
+  # Remote access to the LIVE installer. The installation-cd already runs sshd;
+  # bake the deploy key into root's authorized_keys so you can SSH in from your
+  # workstation to watch/drive an install without touching the console — and open
+  # port 22 (openssh.openFirewall) + advertise over mDNS so it's reachable by
+  # name. PermitRootLogin defaults to prohibit-password, which permits key auth.
+  services.openssh.enable = true;
+  services.openssh.openFirewall = true;
+  users.users.root.openssh.authorizedKeys.keys = deployKeys;
+  networking.hostName = lib.mkForce installerHostName;
+  services.avahi = {
+    enable = true;
+    nssmdns4 = true;
+    publish = { enable = true; addresses = true; workstation = true; };
+  };
+
+  # AMD (and some Intel) mini PCs garble the console when the GPU's KMS driver
+  # takes over after stage-2 — the EFI framebuffer is fine, then amdgpu re-sets a
+  # bad mode. nomodeset keeps the kernel on the EFI framebuffer, which renders
+  # cleanly. The installer needs no GPU acceleration, so this is a safe default;
+  # the installed system carries the same param (see nix/modules/x86-target.nix).
+  boot.kernelParams = [ "nomodeset" ];
 
   # A recognisable artifact. mkForce beats installation-cd's mkImageMediaOverride.
   isoImage.isoName = lib.mkForce "sbc-install-${hostName}.iso";

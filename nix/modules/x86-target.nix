@@ -38,4 +38,13 @@
     "sd_mod"
     "sdhci_pci"
   ];
+
+  # Many mini PCs (notably AMD Ryzen APUs) garble the console once the GPU's KMS
+  # driver takes over after early boot — the EFI framebuffer renders fine, then
+  # amdgpu re-sets a bad mode. nomodeset keeps the kernel on the EFI framebuffer.
+  # A headless appliance needs no GPU acceleration, so this is a safe default and
+  # guarantees a usable console if a monitor is ever attached. The installer ISO
+  # carries the same param (see nix/installer/iso.nix). Drop it (or set an
+  # explicit `video=` mode) if you later want KMS/GPU on this box.
+  boot.kernelParams = [ "nomodeset" ];
 }
