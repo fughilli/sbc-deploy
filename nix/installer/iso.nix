@@ -52,6 +52,15 @@ in
   # A recognisable artifact. mkForce beats installation-cd's mkImageMediaOverride.
   isoImage.isoName = lib.mkForce "sbc-install-${hostName}.iso";
 
+  # Faster ISO assembly. mksquashfs compression of the on-ISO Nix store is the
+  # long pole of the build and is purely CPU-bound — brutal under QEMU x86
+  # emulation on an Apple-Silicon builder. The stock installation-cd default is a
+  # high zstd level (small ISO, slow compress); drop to a fast level. This
+  # installer is written to a USB and used once, so a modestly larger squashfs is
+  # a good trade for a much faster (and far less emulation-punishing) build. Bump
+  # the level back up if ISO size matters more than build time for you.
+  isoImage.squashfsCompression = "zstd -Xcompression-level 3";
+
   # Auto-run the installer on tty1.
   systemd.services.sbc-installer = {
     description = "sbc-deploy interactive installer";
