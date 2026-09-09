@@ -92,9 +92,17 @@ fi
 
 menu_text="Select the disk to install ${TARGET_HOST} onto.\n\nEVERYTHING on the chosen disk will be ERASED."
 [ -n "$boot_disk" ] && menu_text="${menu_text}\n\n(The installer USB, ${boot_disk}, is hidden.)"
-DEV="$(whiptail --title "$BT" \
+# Capture the choice via a temp file rather than the usual `3>&1 1>&2 2>&3` swap:
+# that swap points whiptail's stderr at a pipe, and this newt build then decides
+# it isn't on a terminal and drops out of fullscreen (a blank line + cursor
+# instead of the menu). Writing the result to a file with `2>` keeps stdout AND
+# the drawing on the tty, so the menu renders like every other dialog.
+sel_file="/tmp/sbc-disk-sel"
+whiptail --title "$BT" \
   --menu "$menu_text" \
-  20 78 8 "${menu_args[@]}" 3>&1 1>&2 2>&3)" || bail "No disk selected."
+  20 78 8 "${menu_args[@]}" 2>"$sel_file" || bail "No disk selected."
+DEV="$(cat "$sel_file" 2>/dev/null)"
+rm -f "$sel_file"
 [ -n "$DEV" ] || bail "No disk selected."
 [ -b "$DEV" ] || fail "$DEV is not a block device"
 # Belt and suspenders: refuse the boot medium even if detection above missed it.
