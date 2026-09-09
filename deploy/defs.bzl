@@ -22,13 +22,24 @@ Two orthogonal axes, so one config serves many boards:
     tailscale name / AP SSID under a consumer's naming scheme) — the SAME flag in
     every mode. Omit it to get the baked-in `hostname`.
 
-This creates targets for the three deployment modes (+ key management):
+This creates targets for the three deployment modes (+ key management). The
+image targets come in two families; use the pair matching your board's `family`:
 
-    # Mode 1 — full system image (minimal system + your bundled application):
-    bazel run //consumer:myboard.image_sd      -- [--device /dev/sdX] [--no-write] [--hostname <name>]
-    # Mode 2 — base system image only (networking, no application):
-    bazel run //consumer:myboard.image_sd_base -- [--device /dev/sdX] [--no-write] [--hostname <name>]
-    # Mode 3 — push the application (+ its system deps) to a running board:
+    # Raspberry Pi family (board family = "raspberrypi", the default):
+    #   Mode 1 — full system SD image (minimal system + your bundled application):
+    bazel run //consumer:myboard.image_sd           -- [--device /dev/sdX] [--no-write] [--hostname <name>]
+    #   Mode 2 — base system SD image only (networking, no application):
+    bazel run //consumer:myboard.image_sd_base      -- [--device /dev/sdX] [--no-write] [--hostname <name>]
+
+    # amd64 family (board family = "x86_64"): a bootable install USB (ISO) that
+    # interactively installs the system onto the mini PC's internal disk:
+    #   Mode 1 — full system (base + app) installer USB:
+    bazel run //consumer:myboard.image_installer      -- [--device /dev/sdX] [--no-write] [--hostname <name>]
+    #   Mode 2 — base system (networking, no app) installer USB:
+    bazel run //consumer:myboard.image_installer_base -- [--device /dev/sdX] [--no-write] [--hostname <name>]
+
+    # Mode 3 — push the application (+ its system deps) to a running board
+    # (identical for both families; the box must already be installed/booted):
     bazel run //consumer:myboard.deploy_live   -- <host-or-ip> [--hostname <name>] [--user root]
 
     # e.g. flash/deploy the same config as several distinct boards:
@@ -163,10 +174,14 @@ def sbc_application(
       flake: workspace-relative path to the directory holding flake.nix (which
         returns `sbc-deploy.lib.mkSbcProject { … }`).
       board: label of a board definition (an `sbc_board` target carrying
-        `SbcBoardInfo`) naming the nixos-raspberrypi board + optional submodules.
-        Default `//deploy/boards:raspberry-pi-5`; predefined targets live in
-        `@sbc_deploy//deploy/boards`. Flows to `mkSbcSystem` via `$SBC_BOARD` /
-        `$SBC_BOARD_MODULES`, so the consumer's flake needn't hardcode a board.
+        `SbcBoardInfo`) naming the platform family + (for the RPi family) the
+        nixos-raspberrypi board + optional submodules. Default
+        `//deploy/boards:raspberry-pi-5`; predefined targets live in
+        `@sbc_deploy//deploy/boards` (incl. `amd64-generic` for an x86_64 mini
+        PC). Flows to `mkSbcSystem` via `$SBC_BOARD` / `$SBC_BOARD_MODULES` /
+        `$SBC_BOARD_FAMILY`, so the consumer's flake needn't hardcode a board.
+        The family also selects which image targets are meaningful: `image_sd*`
+        for raspberrypi, `image_installer*` for x86_64.
       lean: super-lean base image — drop the RPi sd-image rescue toolkit
         (vim/testdisk/ddrescue/…), documentation, and NixOS's default extra
         packages. Right for a headless appliance; leaves coreutils/systemd/your
@@ -297,10 +312,18 @@ def sbc_application(
         )
 
     # Mode 1: full system + bundled app.
+    #   Raspberry Pi family -> SD image (image_sd).
+    #   amd64 family        -> bootable install USB / ISO (image_installer).
+    # Both target sets are always emitted; use the one matching your board's
+    # family. Running the other builds a nix attr that doesn't exist for this
+    # project (images.sdImage vs images.installerIso) and fails with a clear
+    # "attribute … missing" — it can't produce a wrong-platform image.
     _target("image_sd", ["image"] + base + ["--attr", "images.sdImage"])
+    _target("image_installer", ["image"] + base + ["--attr", "images.installerIso"])
 
     # Mode 2: minimal base system (networking config), no app.
     _target("image_sd_base", ["image"] + base + ["--attr", "images.sdImageBase"])
+    _target("image_installer_base", ["image"] + base + ["--attr", "images.installerIsoBase"])
 
     # Mode 3: switch a running board to the full system (app + system deps).
     # The target bakes WHICH config to build (--nixos-attr, the mode axis); the

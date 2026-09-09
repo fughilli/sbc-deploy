@@ -48,6 +48,7 @@
   outputs = { self, nixpkgs, nixos-raspberrypi, ... }@inputs:
     let
       modulesDir = ./modules;
+      installerDir = ./installer;
 
       # The reusable modules, exposed both individually and as a bundle.
       sbcModules = {
@@ -59,7 +60,14 @@
         spi = modulesDir + "/spi.nix";
       };
 
-      # Build a Raspberry Pi NixOS system.
+      # Build an SBC NixOS system. `family` selects the platform:
+      #   * "raspberrypi" (default) — a nixos-raspberrypi system + SD image.
+      #   * "x86_64"                — a stock nixpkgs x86_64-linux system
+      #                               (UEFI/systemd-boot); its bootable installer
+      #                               USB is built by mkInstallerIso / mkSbcProject.
+      #   family       : "raspberrypi" | "x86_64". Overridden by $SBC_BOARD_FAMILY
+      #                  (the sbc_application `board` attr's family). On x86_64 the
+      #                  `board`/`boardModules`/cross RPi seams are unused.
       #   board        : nixos-raspberrypi board, e.g. "raspberry-pi-5" (default),
       #                  "raspberry-pi-4", "raspberry-pi-3", "raspberry-pi-02".
       #                  Overridden by $SBC_BOARD (the sbc_application `board` attr).
@@ -77,6 +85,7 @@
         { hostName
         , board ? "raspberry-pi-5"
         , boardModules ? [ ]
+        , family ? "raspberrypi"
         , modules ? [ ]
         , stateVersion ? "25.05"
         , buildPlatform ? null
@@ -146,10 +155,59 @@
                 { name = key; value = builtins.path { path = /. + val; name = key; }; })
               (nixpkgs.lib.filter (e: e != "")
                 (nixpkgs.lib.splitString ";" envBuildData)));
-        in
-        nixos-raspberrypi.lib.nixosSystem {
+
+          # Board "family" seam. The Bazel board definition carries a family
+          # (raspberrypi | x86_64) on its 3rd line, exported as $SBC_BOARD_FAMILY
+          # by launch.sh; it selects the system builder below. Empty (pure eval, or
+          # older two-line board files) ⇒ raspberrypi, so the Pi path is unchanged.
+          envFamily = builtins.getEnv "SBC_BOARD_FAMILY";
+          resolvedFamily = if envFamily != "" then envFamily else family;
+
           specialArgs = inputs // { inherit self sbcBuildData; };
-          modules = [
+
+          # ---- modules shared by every family --------------------------------
+
+          # Super-lean: no docs / NixOS manual and none of NixOS's default extra
+          # packages (perl/rsync/strace) on a headless appliance.
+          leanDocsModule = ({ lib, ... }: lib.mkIf resolvedLean {
+            documentation.enable = lib.mkForce false;
+            documentation.man.enable = lib.mkForce false;
+            documentation.nixos.enable = lib.mkForce false;
+            documentation.doc.enable = lib.mkForce false;
+            documentation.info.enable = lib.mkForce false;
+            environment.defaultPackages = lib.mkForce [ ];
+          });
+
+          # The board's IDENTITY. $SBC_HOSTNAME_OVERRIDE (read under `nix build
+          # --impure`) wins over the baked-in hostName when non-empty. At
+          # commissioning the deploy script's `--hostname` flag sets it; on a later
+          # deploy_live the script instead sources it from the board's own
+          # committed identity (/var/lib/sbc/hostname, written write-once by
+          # identity.nix) — so a redeploy reuses the fixed identity and can never
+          # reset it to the baked default. Same getEnv-at-eval seam as wifi.nix /
+          # ssh-deploy.nix; empty (incl. pure eval) => hostName.
+          hostIdentityModule = {
+            networking.hostName =
+              let override = builtins.getEnv "SBC_HOSTNAME_OVERRIDE";
+              in if override != "" then override else hostName;
+            system.stateVersion = stateVersion;
+          };
+
+          # Reusable sbc-deploy modules (always on; wifi is inert unless an SSID is
+          # configured via sbcDeploy.wifi / $SBC_WIFI_SSID). sbc-base gates its RPi
+          # wireless-firmware bits on aarch64, so it is safe on x86 too.
+          commonModules = [
+            sbcModules.sbc-base
+            sbcModules.ssh-deploy
+            sbcModules.app-service
+            sbcModules.identity
+            sbcModules.wifi
+            leanDocsModule
+            hostIdentityModule
+          ];
+
+          # ---- Raspberry Pi family (nixos-raspberrypi) -----------------------
+          rpiModules = [
             ({ ... }: {
               imports = [
                 nixos-raspberrypi.nixosModules.${resolvedBoard}.base
@@ -176,52 +234,20 @@
                 nixpkgs.lib.optional resolvedLean (modulesPath + "/profiles/base.nix");
             })
 
-            # Super-lean: no docs / NixOS manual and none of NixOS's default extra
-            # packages (perl/rsync/strace) on a headless appliance.
-            ({ lib, ... }: lib.mkIf resolvedLean {
-              documentation.enable = lib.mkForce false;
-              documentation.man.enable = lib.mkForce false;
-              documentation.nixos.enable = lib.mkForce false;
-              documentation.doc.enable = lib.mkForce false;
-              documentation.info.enable = lib.mkForce false;
-              environment.defaultPackages = lib.mkForce [ ];
-            })
-
             # Cross-compilation: pin the build platform when requested (see the
-            # cross seam above). Inert (mkIf false) for a native build, so the
-            # aarch64-on-aarch64 path is byte-for-byte unchanged.
+            # cross seam above and the flake header). Inert (mkIf false) for a
+            # native build, so the aarch64-on-aarch64 path is byte-for-byte
+            # unchanged. Re-sources the kernel + RPi firmware from the (now
+            # cross-capable) system pkgs — the board module otherwise takes them
+            # from a native aarch64-linux package set that ignores buildPlatform.
             ({ lib, pkgs, ... }: lib.mkIf (resolvedBuildPlatform != null) {
-              # hostPlatform stays aarch64-linux (board module); pinning
-              # buildPlatform to a *different* platform flips nixpkgs into cross
-              # mode so this host realizes the closure.
               nixpkgs.buildPlatform = resolvedBuildPlatform;
-
-              # Re-source the kernel + RPi firmware from the system's own (now
-              # cross-capable) pkgs. The board module defaults BOTH to
-              # nixos-raspberrypi.packages.<system>.* — a *native* aarch64-linux
-              # instantiation (`import nixpkgs { system = "aarch64-linux"; }`) that
-              # ignores nixpkgs.buildPlatform, so it always demands an
-              # aarch64-linux builder and defeats --cross (the kernel + firmware
-              # are the very things cross-building has to produce locally). The
-              # kernel-and-firmware overlay already exposes the same attrs on the
-              # system pkgs: pkgs.linuxPackages_rpiN builds via `buildLinux`, which
-              # honours stdenv.hostPlatform and cross-compiles, and
-              # pkgs.raspberrypifw is prebuilt firmware (a plain unpack that now
-              # runs on the build platform instead of needing an aarch64-linux one).
-              # mkForce beats the board module's mkDefault. This whole module is
-              # inert for a native build, so cached native artifacts are unaffected.
               boot.kernelPackages = lib.mkForce pkgs.${kernelPackagesAttr};
               boot.loader.raspberry-pi.firmwarePackage = lib.mkForce pkgs.raspberrypifw;
 
-              # systemd's BPF framework (withLibBPF) compiles its BPF programs at
-              # build time, pulling bpftool + clang/llvm as *build-host*
-              # (nativeBuildInputs) tools. Those are Linux-only, so a non-Linux
-              # build host (macOS) can't provide them and cross eval dies on
-              # `bpftools … not available on hostPlatform "…-darwin"`. Disable the
-              # framework, but ONLY when the build host isn't Linux — an
-              # x86_64-linux -> aarch64-linux cross keeps it (bpftool runs there).
-              # The overlay gates itself on buildPlatform, so it's a no-op for a
-              # Linux builder even though this module is active.
+              # systemd's BPF framework pulls Linux-only bpftool as a build-host
+              # tool; drop it only when the build host isn't Linux (an
+              # x86_64-linux -> aarch64-linux cross keeps it).
               nixpkgs.overlays = [
                 (final: prev:
                   nixpkgs.lib.optionalAttrs (!prev.stdenv.buildPlatform.isLinux) {
@@ -229,54 +255,80 @@
                   })
               ];
 
-              # Many build-time helpers (e.g. yodl, used to render zsh's man
-              # pages) are perfectly portable but nixpkgs marks them
-              # `platforms = linux`, so cross eval from a non-Linux host is
-              # *refused* before they even get a chance to compile. Downgrade that
-              # refusal to a warning so those tools build for the Darwin build
-              # host and the cross can proceed. Only genuinely Linux-bound tools
-              # (which we disable at the feature level, e.g. systemd's bpftool
-              # above) would then fail later at build time, which is the correct
-              # signal. Scoped to a non-Linux build host; a Linux builder keeps the
-              # strict default. (resolvedBuildPlatform is non-null here.)
+              # Portable-but-`platforms=linux` build tools (e.g. yodl for zsh docs)
+              # are refused up front on a non-Linux build host; downgrade to a
+              # warning so the cross can proceed (genuinely Linux-bound tools are
+              # disabled at the feature level above).
               nixpkgs.config.allowUnsupportedSystem =
                 !(nixpkgs.lib.hasInfix "linux" resolvedBuildPlatform);
             })
+          ];
 
-            # Reusable sbc-deploy modules (always on; wifi is inert unless an
-            # SSID is configured via sbcDeploy.wifi / $SBC_WIFI_SSID).
-            sbcModules.sbc-base
-            sbcModules.ssh-deploy
-            sbcModules.app-service
-            sbcModules.identity
-            sbcModules.wifi
+          # ---- generic x86_64 (amd64) family ---------------------------------
+          # A stock nixpkgs x86_64-linux system: UEFI/systemd-boot + by-label
+          # root/boot filesystems (see x86-target.nix). This module is the x86
+          # counterpart to the RPi board + sd-image modules above.
+          x86Modules = [ (modulesDir + "/x86-target.nix") ];
+        in
+        if resolvedFamily == "x86_64"
+        then
+          # amd64 mini PC: no nixos-raspberrypi, no sd-image, no RPi cross module.
+          # The bootable installer that carries this system's closure is built by
+          # mkInstallerIso (see mkSbcProject).
+          nixpkgs.lib.nixosSystem {
+            system = "x86_64-linux";
+            inherit specialArgs;
+            modules = x86Modules ++ commonModules ++ modules;
+          }
+        else
+          nixos-raspberrypi.lib.nixosSystem {
+            inherit specialArgs;
+            modules = rpiModules ++ commonModules ++ modules;
+          };
 
-            {
-              # The board's IDENTITY. $SBC_HOSTNAME_OVERRIDE (read under `nix
-              # build --impure`) wins over the baked-in hostName when non-empty.
-              # At commissioning the deploy script's `--hostname` flag sets it; on
-              # a later deploy_live the script instead sources it from the board's
-              # own committed identity (/var/lib/sbc/hostname, written write-once by
-              # identity.nix) — so a redeploy reuses the fixed identity and can
-              # never reset it to the baked default. Same getEnv-at-eval seam as
-              # wifi.nix / ssh-deploy.nix; empty (incl. pure eval) => hostName.
-              networking.hostName =
-                let override = builtins.getEnv "SBC_HOSTNAME_OVERRIDE";
-                in if override != "" then override else hostName;
-              system.stateVersion = stateVersion;
-            }
-          ] ++ modules;
+      # Build an interactive amd64 install USB (an ISO) that carries a target
+      # x86_64-linux system and installs it onto a mini PC's internal disk.
+      #   hostName       : the target's hostName (shown in the installer UI + the
+      #                    ISO artifact name).
+      #   targetToplevel : the target system's config.system.build.toplevel — the
+      #                    WHOLE closure is baked into the ISO's nix store, so the
+      #                    install is fully offline (no substituters/network).
+      # The ISO is a stock nixpkgs installation-cd that auto-runs a small curses
+      # installer on tty1 (nix/installer/sbc-install.sh via nix/installer/iso.nix):
+      # it lets the operator pick the disk + see the layout, confirm, then
+      # partitions (GPT: 512 MiB vfat ESP + ext4 root) and runs `nixos-install
+      # --system <targetToplevel>`. Returns a nixosSystem; its
+      # config.system.build.isoImage is the .iso.
+      mkInstallerIso =
+        { hostName
+        , targetToplevel
+        }:
+        nixpkgs.lib.nixosSystem {
+          system = "x86_64-linux";
+          specialArgs = inputs // { inherit self targetToplevel hostName; };
+          modules = [
+            (nixpkgs + "/nixos/modules/installer/cd-dvd/installation-cd-minimal.nix")
+            (installerDir + "/iso.nix")
+          ];
         };
 
       # Build the standard outputs for one SBC application, supporting all three
       # deployment modes (see the `sbc_application` Bazel macro):
-      #   * full system (base + app)  -> images.sdImage      (mode 1)
-      #   * base system (net only)    -> images.sdImageBase  (mode 2)
-      #   * full system for live switch -> nixosConfigurations.<hostName> (mode 3)
+      #   Raspberry Pi (family = "raspberrypi", default):
+      #     * full system (base + app)    -> images.sdImage        (mode 1)
+      #     * base system (net only)      -> images.sdImageBase    (mode 2)
+      #   amd64 mini PC (family = "x86_64"):
+      #     * full system installer USB   -> images.installerIso     (mode 1)
+      #     * base system installer USB   -> images.installerIsoBase (mode 2)
+      #   Both families:
+      #     * full system for live switch -> nixosConfigurations.<hostName> (mode 3)
       # Consumers usually return this directly as their flake outputs.
       #   appModules    : the application — services.sbcApps + any system deps.
       #   systemModules : base config baked into BOTH images (wifi, hardware…),
       #                   so the base image can reach the network for deploy_live.
+      #   family        : "raspberrypi" (default) or "x86_64"; selects the system
+      #                   builder + which `images.*` are produced. Overridden by
+      #                   $SBC_BOARD_FAMILY (the sbc_application `board` attr).
       #   buildPlatform : cross-compile on this platform instead of dispatching to
       #                   a native aarch64-linux builder (see mkSbcSystem); null
       #                   defers to the $SBC_CROSS / $SBC_BUILD_PLATFORM env seam.
@@ -284,6 +336,7 @@
         { hostName
         , board ? "raspberry-pi-5"
         , boardModules ? [ ]
+        , family ? "raspberrypi"
         , appModules ? [ ]
         , systemModules ? [ ]
         , stateVersion ? "25.05"
@@ -292,21 +345,39 @@
         }:
         let
           mk = extra: mkSbcSystem {
-            inherit hostName board boardModules stateVersion buildPlatform leanImage;
+            inherit hostName board boardModules family stateVersion buildPlatform leanImage;
             modules = systemModules ++ extra;
           };
           full = mk appModules;
           base = mk [ ];
+          # Resolve the family the same way mkSbcSystem does (env over arg), so the
+          # image outputs below match the branch the systems were actually built
+          # for under `--impure`.
+          envFamily = builtins.getEnv "SBC_BOARD_FAMILY";
+          resolvedFamily = if envFamily != "" then envFamily else family;
         in
         {
           nixosConfigurations = {
             ${hostName} = full;
             "${hostName}-base" = base;
           };
-          images = {
-            sdImage = full.config.system.build.sdImage;
-            sdImageBase = base.config.system.build.sdImage;
-          };
+          images =
+            if resolvedFamily == "x86_64" then {
+              # Bootable install USB (ISO), carrying the full/base target closure.
+              installerIso =
+                (mkInstallerIso {
+                  inherit hostName;
+                  targetToplevel = full.config.system.build.toplevel;
+                }).config.system.build.isoImage;
+              installerIsoBase =
+                (mkInstallerIso {
+                  inherit hostName;
+                  targetToplevel = base.config.system.build.toplevel;
+                }).config.system.build.isoImage;
+            } else {
+              sdImage = full.config.system.build.sdImage;
+              sdImageBase = base.config.system.build.sdImage;
+            };
         };
     in
     {

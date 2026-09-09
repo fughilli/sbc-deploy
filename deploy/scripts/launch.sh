@@ -61,14 +61,17 @@ if [[ "$pv_rlocationpath" != "-" ]]; then
 fi
 
 # Board definition (from the sbc_application `board` attr / an sbc_board target).
-# The file is two lines: the nixos-raspberrypi board name, then comma-joined
-# optional submodules. Export both for Nix eval to read (see mkSbcSystem).
+# The file is three lines: the nixos-raspberrypi board name, comma-joined optional
+# submodules, then the platform family (raspberrypi | x86_64). Export all three
+# for Nix eval to read (see mkSbcSystem). Older two-line board files leave the
+# family empty, which mkSbcSystem treats as raspberrypi.
 if [[ "$board_rlocationpath" != "-" ]]; then
   board_file="$(rlocation "$board_rlocationpath")" || {
     echo >&2 "ERROR: could not resolve board definition ($board_rlocationpath) in runfiles"; exit 1; }
   SBC_BOARD="$(sed -n 1p "$board_file")"
   SBC_BOARD_MODULES="$(sed -n 2p "$board_file")"
-  export SBC_BOARD SBC_BOARD_MODULES
+  SBC_BOARD_FAMILY="$(sed -n 3p "$board_file")"
+  export SBC_BOARD SBC_BOARD_MODULES SBC_BOARD_FAMILY
 fi
 
 # The darwin linux-builder VM flake, shipped in runfiles so the auto-managed
