@@ -50,6 +50,10 @@ HOSTNAME_ATTR="${SBC_HOSTNAME:-}"
 # variant, baked by the target (image mode uses --attr instead). NOT the identity.
 NIXOS_ATTR="${SBC_NIXOS_ATTR:-}"
 SECRETS_DIR_OVERRIDE="${SBC_DEPLOY_KEY_DIR:-}"
+# Tailscale auth key file for the seed_tailscale target. Default: a
+# `tailscale-authkey` file in the same gitignored secrets/ dir as the deploy key.
+# Override with --authkey-file (absolute, or repo-root-relative).
+TS_AUTHKEY_FILE="${SBC_TAILSCALE_AUTHKEY_FILE:-}"
 
 DEVICE=""
 WRITE=1
@@ -138,6 +142,27 @@ MANAGED_QEMU_PID=""
 KEEP_BUILDER="${SBC_KEEP_BUILDER:-0}"
 BUILDER_PORT=31022
 BUILDER_HOSTKEY_B64=""
+
+# Which managed builder VM to use, keyed off the target's board family
+# ($SBC_BOARD_FAMILY, exported by launch.sh). An amd64 (x86_64) target needs an
+# x86_64-linux builder; everything else uses the native aarch64-linux twin. Three
+# knobs: the builder flake attr to boot, the system advertised on the --builders
+# line, the qemu binary the VM runs as (for PID match/teardown), and how long to
+# wait for sshd (an x86 guest under QEMU TCG on Apple Silicon boots slowly).
+case "${SBC_BOARD_FAMILY:-}" in
+  x86_64)
+    BUILDER_ATTR="linux-builder-x86"
+    BUILDER_SYSTEM="x86_64-linux"
+    BUILDER_QEMU="qemu-system-x86_64"
+    BUILDER_SSH_WAIT=300
+    ;;
+  *)
+    BUILDER_ATTR="linux-builder"
+    BUILDER_SYSTEM="aarch64-linux"
+    BUILDER_QEMU="qemu-system-aarch64"
+    BUILDER_SSH_WAIT=90
+    ;;
+esac
 BUILDER_KEYS_DIR="${SBC_BUILDER_KEYS_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/sbc-deploy/builder-keys}"
 # Path for the VM's disk (qcow2). run-nixos-vm defaults this to ./nixos.qcow2 in
 # the CWD, which would scatter a large image into the repo. The builder is pure
@@ -202,11 +227,11 @@ start_managed_builder() {
   # Extract run-builder (the boot half of create-builder) so we can boot with our
   # own $KEYS and skip add-keys' sudo credential sync.
   local installer runb
-  installer="$(nix build --no-link --print-out-paths "path:${bflake}#linux-builder" 2>/dev/null | tail -n1)" || return 1
+  installer="$(nix build --no-link --print-out-paths "path:${bflake}#${BUILDER_ATTR}" 2>/dev/null | tail -n1)" || return 1
   [[ -n "$installer" ]] || return 1
   runb="$(grep -oE '/nix/store/[a-z0-9]+-run-builder/bin/run-builder' "$installer/bin/create-builder" | head -n1)"
   [[ -n "$runb" ]] || return 1
-  echo "==> Starting auto-managed linux-builder VM (will stop when done; --keep-builder to keep)…" >&2
+  echo "==> Starting auto-managed ${BUILDER_SYSTEM} builder VM (${BUILDER_ATTR}; will stop when done; --keep-builder to keep)…" >&2
   local log; log="$(repo_root)/.sbc-build/builder.log"; mkdir -p "$(dirname "$log")"
   mkdir -p "$(dirname "$BUILDER_DISK")"
   # KEYS: our key the VM authorizes; NIX_DISK_IMAGE: stable persistent disk (not
@@ -215,7 +240,7 @@ start_managed_builder() {
   local i
   for i in $(seq 1 180); do builder_port_open && break; sleep 1; done
   builder_port_open || { echo "ERROR: builder VM did not come up on :$BUILDER_PORT (see $log)." >&2; return 1; }
-  MANAGED_QEMU_PID="$(pgrep -f "qemu-system-aarch64.*hostfwd=tcp::${BUILDER_PORT}-" | head -n1)"
+  MANAGED_QEMU_PID="$(pgrep -f "${BUILDER_QEMU}.*hostfwd=tcp::${BUILDER_PORT}-" | head -n1)"
   BUILDER_STARTED=1
 }
 
@@ -229,7 +254,7 @@ stop_managed_builder() {
   fi
   echo "==> Stopping auto-managed builder VM…" >&2
   if [[ -n "$MANAGED_QEMU_PID" ]]; then kill "$MANAGED_QEMU_PID" 2>/dev/null || true
-  else pkill -f "qemu-system-aarch64.*hostfwd=tcp::${BUILDER_PORT}-" 2>/dev/null || true; fi
+  else pkill -f "${BUILDER_QEMU}.*hostfwd=tcp::${BUILDER_PORT}-" 2>/dev/null || true; fi
   BUILDER_STARTED=0
   # Reclaim the scratch disk (qcow2 doesn't shrink on in-VM GC). Kept only if the
   # user pinned a fixed SBC_BUILDER_DISK. Give qemu a moment to release the file.
@@ -254,8 +279,8 @@ wait_builder_ready() {
 
 _set_managed_builder_args() {
   BUILDER_ARGS=(--max-jobs 0 --option builders-use-substitutes true \
-    --builders "ssh-ng://builder@linux-builder aarch64-linux $(_builder_key) 6 - big-parallel,kvm,benchmark - $BUILDER_HOSTKEY_B64")
-  echo "==> Using auto-managed aarch64-linux builder VM." >&2
+    --builders "ssh-ng://builder@linux-builder ${BUILDER_SYSTEM} $(_builder_key) 6 - big-parallel,kvm,benchmark - $BUILDER_HOSTKEY_B64")
+  echo "==> Using auto-managed ${BUILDER_SYSTEM} builder VM." >&2
 }
 
 # macOS default backend: ensure a builder VM that accepts our key is up, then
@@ -278,7 +303,8 @@ ensure_managed_builder() {
     return 0
   }
   # Our VM's port is up; now wait for sshd to accept our key before dispatching.
-  if wait_builder_ready 90; then
+  # x86 guests under QEMU TCG boot slowly, so the wait scales with the family.
+  if wait_builder_ready "$BUILDER_SSH_WAIT"; then
     _set_managed_builder_args
   else
     echo "ERROR: builder VM booted but SSH with the sbc-deploy key never became ready (see .sbc-build/builder.log)." >&2
@@ -387,6 +413,7 @@ parse_common_flags() {
       --detect-cmd)   export SBC_DETECT_CMD="$2"; shift 2 ;;  # update: remote probe echoing SBC_* caps
       --framework-subdir) FRAMEWORK_SUBDIR="$2"; shift 2 ;;
       --secrets-dir)  SECRETS_DIR_OVERRIDE="$2"; shift 2 ;;
+      --authkey-file) TS_AUTHKEY_FILE="$2"; shift 2 ;;  # seed_tailscale: path to the tailscale auth key
       --device)          DEVICE="$2"; shift 2 ;;
       --no-write|--no_write) WRITE=0; shift ;;
       --user)            DEPLOY_USER="$2"; shift 2 ;;
@@ -505,7 +532,7 @@ cmd_image() {
 
   prepare_backend "path:${flake_dir}#${IMAGE_ATTR}"
 
-  echo "==> Building SD image: path:${flake_dir}#${IMAGE_ATTR}"
+  echo "==> Building image: path:${flake_dir}#${IMAGE_ATTR}"
   # Capture the store output path from --print-out-paths (stdout); build progress
   # stays on stderr. Avoids `readlink -f`, which BSD/macOS doesn't support.
   # ${arr[@]+…} guards the empty-array-under-`set -u` case on bash 3.2 (macOS).
@@ -518,11 +545,12 @@ cmd_image() {
     --impure --out-link "$gclink" --print-out-paths \
     "path:${flake_dir}#${IMAGE_ATTR}" | tail -n1)"
   [[ -n "$out" ]] || die "nix build produced no output path."
-  # The output is a DIRECTORY (itself named …img.zst); the actual image is a file
-  # inside it (e.g. sd-image/*.img.zst) — restrict to -type f so we don't pick
-  # the directory.
-  img="$(find "$out" -maxdepth 2 -type f \( -name '*.img' -o -name '*.img.zst' \) | head -n1)"
-  [[ -n "$img" ]] || die "no .img/.img.zst file found under $out."
+  # The output is a DIRECTORY (itself named …img.zst); the actual artifact is a
+  # file inside it — an SD image (sd-image/*.img.zst) for the Raspberry Pi family,
+  # or a bootable install USB (iso/*.iso) for the amd64 family. Restrict to
+  # -type f so we don't pick the directory.
+  img="$(find "$out" -maxdepth 2 -type f \( -name '*.img' -o -name '*.img.zst' -o -name '*.iso' \) | head -n1)"
+  [[ -n "$img" ]] || die "no .img/.img.zst/.iso file found under $out."
   echo "==> Built image: $img"
 
   if [[ $WRITE -eq 0 || -z "$DEVICE" ]]; then
@@ -817,6 +845,58 @@ cmd_ssh() {
 }
 
 # ---------------------------------------------------------------------------
+# seed_tailscale — bring the board up on the tailnet via `tailscale up --authkey`
+# over the deploy SSH. Reuses the deploy key (like ssh/deploy) and reads the auth
+# key from a gitignored secrets file (secrets/tailscale-authkey by default), so
+# the key never lands in git or the nix store. Requires sbcDeploy.tailscale.enable
+# in the deployed config (nix/modules/tailscale.nix). One-time: tailscaled
+# persists its node key. Extra `tailscale up` flags go after a literal `--`.
+# ---------------------------------------------------------------------------
+cmd_seed_tailscale() {
+  command -v ssh >/dev/null 2>&1 || die "'ssh' not found."
+  key_paths
+  [[ -f "$PRIV" ]] || die "deploy private key not found at $PRIV. Generate it with the .keys target (keys init) and image/deploy the board first."
+  chmod 600 "$PRIV" 2>/dev/null || true
+
+  # Resolve the auth key file: --authkey-file (absolute or repo-root-relative),
+  # else secrets/tailscale-authkey next to the deploy key.
+  local akf
+  if [[ -n "$TS_AUTHKEY_FILE" ]]; then
+    case "$TS_AUTHKEY_FILE" in
+      /*) akf="$TS_AUTHKEY_FILE" ;;
+      *)  akf="$(repo_root)/$TS_AUTHKEY_FILE" ;;
+    esac
+  else
+    akf="$SECRETS/tailscale-authkey"
+  fi
+  [[ -f "$akf" ]] || die "tailscale auth key file not found at $akf. Put a reusable or ephemeral auth key there (https://login.tailscale.com/admin/settings/keys), or pass --authkey-file <path>. It stays out of git/the store (secrets/ is gitignored)."
+  local authkey; authkey="$(tr -d '[:space:]' < "$akf")"
+  [[ -n "$authkey" ]] || die "tailscale auth key file $akf is empty."
+
+  local host target
+  host="${POSITIONAL[0]:-}"
+  # Default target mirrors the ssh target: the identity if --hostname was given,
+  # else the config's baked hostName (the nixos attr), else the project name.
+  [[ -n "$host" ]] || host="${HOSTNAME_ATTR:-${NIXOS_ATTR:-$PROJECT}}.local"
+  target="${DEPLOY_USER}@${host}"
+  local ssh_opts=(-i "$PRIV" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
+
+  # Build the remote `tailscale up`; quote the key + any extra flags for the
+  # remote shell. The node name defaults (on the device) to networking.hostName,
+  # i.e. the board identity, so no --hostname is needed here.
+  local up="tailscale up --authkey $(printf %q "$authkey")"
+  local f
+  for f in ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}; do up="$up $(printf %q "$f")"; done
+
+  echo "==> Seeding Tailscale on $target (auth key: $akf)" >&2
+  ssh "${ssh_opts[@]}" "$target" "$up" \
+    || die "tailscale up failed on $target (is sbcDeploy.tailscale.enable set and deployed to the board with deploy_live?)"
+  echo "==> tailscale status:" >&2
+  ssh "${ssh_opts[@]}" "$target" "tailscale status" || true
+  echo "done." >&2
+}
+
+# ---------------------------------------------------------------------------
 # builder — start the sized-up linux-builder VM (macOS). Long-running; leave it
 # up in its terminal. Needs the framework in-tree (--framework-subdir).
 # ---------------------------------------------------------------------------
@@ -873,6 +953,7 @@ case "$SUBCMD" in
   deploy)  cmd_deploy ;;
   update)  cmd_update ;;
   ssh)     cmd_ssh ;;
+  seed_tailscale) cmd_seed_tailscale ;;
   builder) cmd_builder ;;
   cache)   cmd_cache ;;
   ""|-h|--help)
@@ -883,6 +964,7 @@ sbc-deploy: usage via the Bazel targets created by the sbc_application macro:
   bazel run //path:NAME.deploy_live   -- <host-or-ip> [--hostname <name>] [--user root] [--builder <spec> | --cross] [--keep-builder]
   bazel run //path:NAME.update        -- <host-or-ip> [--user root]   # detect board + committed profile, then deploy
   bazel run //path:NAME.ssh           -- [host-or-ip] [--hostname <name>] [--user root] [-- <ssh args>]
+  bazel run //path:NAME.seed_tailscale -- [host-or-ip] [--authkey-file <path>] [-- <tailscale up flags>]
   bazel run //path:NAME.keys          -- {init|ensure|rotate|path|pub}
 
 On aarch64-darwin (Apple Silicon) an image can't be built natively. By DEFAULT
@@ -896,5 +978,5 @@ own aarch64-linux builder, or --cross to cross-compile locally (no builder, but
 rebuilds from source; best on x86_64-linux). See the README.
 EOF
     exit 2 ;;
-  *) die "unknown subcommand '$SUBCMD' (expected image|deploy|update|ssh|keys|builder|cache)" ;;
+  *) die "unknown subcommand '$SUBCMD' (expected image|deploy|update|ssh|seed_tailscale|keys|builder|cache)" ;;
 esac

@@ -1,11 +1,13 @@
 # sbc-deploy
 
 A reusable **Bazel + Nix** framework for deploying packaged applications to
-single-board computers (Raspberry Pi and friends).
+single-board computers (Raspberry Pi and friends) and amd64 mini PCs.
 
 You declare your application(s) once; sbc-deploy builds a bootable **NixOS
-SD-card image** with each app wired up as a hardened systemd service, and gives
-you push-button **image / live-deploy / key-management** targets. It was
+SD-card image** (Raspberry Pi) or a **bootable install USB** (amd64 mini PC, see
+["amd64 mini PCs"](#amd64-mini-pcs-x86_64)) with each app wired up as a hardened
+systemd service, and gives you push-button
+**image / live-deploy / key-management** targets. It was
 extracted from the deploy tooling under `pi/` in
 [`fughilli/splanc`](https://github.com/fughilli/splanc) so it can be reused
 across projects, and will be vendored back into that repo once it's solid.
@@ -151,6 +153,70 @@ The write runs under `sudo` (you'll be prompted). Double-check the device — th
 overwrites the whole disk. On macOS the first build/flash pulls `zstd` from the
 cache (tiny).
 
+## amd64 mini PCs (x86_64)
+
+Besides the Raspberry Pi, sbc-deploy can target a generic **amd64 mini PC**
+(Intel N100/N305 and the like; UEFI + systemd-boot). Instead of an SD image you
+flash and slot in, it builds a **bootable install USB** that installs the system
+onto the box's internal disk.
+
+Pick the amd64 board family — that's the only change:
+
+```python
+sbc_application(
+    name = "mybox",
+    flake = "path/to/nix",
+    hostname = "mybox",
+    board = "@sbc_deploy//deploy/boards:amd64-generic",   # x86_64 family
+    framework = "nix",
+)
+```
+
+and set `family = "x86_64"` on the Nix side (or rely on the board attr, which
+flows in via `$SBC_BOARD_FAMILY`):
+
+```nix
+outputs = { self, sbc-deploy, ... }:
+  sbc-deploy.lib.mkSbcProject {
+    hostName = "mybox";
+    family = "x86_64";
+    appModules = [ ./app.nix ];
+    systemModules = [ ./network.nix ];
+  };
+```
+
+The image targets are `image_installer` / `image_installer_base` (the amd64
+analogues of `image_sd` / `image_sd_base`); `deploy_live` / `update` / `ssh` /
+`keys` are identical to the Pi path.
+
+```sh
+# Build the install USB, then write it to a USB stick:
+bazel run //path:mybox.image_installer -- --no-write          # build + print path
+lsblk                                                          # find the stick
+bazel run //path:mybox.image_installer -- --device /dev/sdX   # build + write
+```
+
+**Installing:** boot the mini PC from the USB. A minimal curses installer runs on
+the console — it lists the machine's disks, lets you pick the target, shows the
+partition layout (a 512 MiB vfat ESP + an ext4 root), and asks you to confirm the
+**ERASE** before it touches anything. It then installs the fully-baked system and
+reboots. The whole target closure is embedded in the ISO, so **installation needs
+no network** on the box. Afterwards the box is reachable at `<hostname>.local` and
+takes live redeploys (`deploy_live`) exactly like a Pi.
+
+> On Apple Silicon the build auto-manages an **x86_64-linux** builder VM the same
+> way the Pi path manages an aarch64-linux one: it boots `linux-builder-x86` (a
+> QEMU x86 guest) on demand and tears it down after. The x86 guest is served from
+> cache.nixos.org, and the heavy userland substitutes prebuilt as x86_64 — only a
+> handful of trivial per-config derivations actually run on the VM — so despite
+> being un-accelerated (QEMU TCG) it's fine for image builds. First boot of the
+> x86 VM is slow; the tooling waits up to 5 min for it. If your mini PC's storage
+> controller isn't covered by the default initrd module set, extend
+> `boot.initrd.availableKernelModules` in `nix/modules/x86-target.nix`.
+
+See [`examples/hello-amd64`](examples/hello-amd64) for a complete, runnable
+consumer.
+
 ### `--hostname`: per-board identity (every mode)
 
 A board's `networking.hostName` is baked in from the flake's `hostName`. To use
@@ -286,6 +352,37 @@ deploy/scripts/seed_wifi.sh --host myboard.local --remove CoffeeShop
 
 Baked + seeded compose by `priority`. Keep at least one reliable network baked so
 the board is always reachable even with an empty `/etc`.
+
+## Tailscale
+
+Opt a board onto your tailnet — reach it from anywhere, no LAN/mDNS needed.
+`tailscaled` is baked into the image; the auth key is provisioned out of band
+(never in git or the store). Enable the module in a `systemModule`:
+
+```nix
+sbcDeploy.tailscale.enable = true;   # optionally: ssh = true; authKeyFile = "/var/lib/sbc/tailscale.authkey";
+```
+
+then drop a Tailscale auth key (reusable or ephemeral, from
+<https://login.tailscale.com/admin/settings/keys>) into
+`secrets/tailscale-authkey` — it lives next to the deploy key and is gitignored,
+so it never enters git or the store — and, once the board is up, run the
+`seed_tailscale` target. It reuses the deploy key and reads that file, then runs
+`tailscale up` over SSH:
+
+```sh
+bazel run //path:myboard.seed_tailscale                       # host defaults to <hostname>.local
+bazel run //path:myboard.seed_tailscale -- 192.168.1.42       # explicit host/IP
+bazel run //path:myboard.seed_tailscale -- -- --ssh --advertise-tags=tag:sbc   # extra `tailscale up` flags
+# custom key path: bazel run //path:myboard.seed_tailscale -- --authkey-file secrets/other.key
+```
+
+The node joins as its hostname (the board identity, e.g. `myboard`). `tailscaled`
+persists its node key under `/var/lib/tailscale`, so it's a one-time step —
+membership survives reboots and redeploys. Prefer fully declarative? Set
+`authKeyFile` to a device path and drop the key there; tailscaled connects on
+boot. `tailscale0` is a trusted firewall interface, so the board's SSH/app ports
+are reachable over the tailnet without opening them to the LAN.
 
 ## Requirements
 

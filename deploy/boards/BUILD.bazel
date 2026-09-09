@@ -38,3 +38,14 @@ alias(
     name = "raspberry-pi-zero-2w",
     actual = ":raspberry-pi-02",
 )
+
+# Generic amd64 (x86_64-linux) mini PC: UEFI + systemd-boot, no board-specific
+# kernel/firmware. `family = "x86_64"` swaps the system builder to stock nixpkgs
+# and makes `sbc_application` build a bootable install USB (image_installer) that
+# installs the system onto the box's internal disk. `nixos_board` is informational
+# here (the family drives everything).
+sbc_board(
+    name = "amd64-generic",
+    nixos_board = "generic-x86",
+    family = "x86_64",
+)

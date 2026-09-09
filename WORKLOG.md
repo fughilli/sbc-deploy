@@ -95,6 +95,146 @@ The core framework is proven end-to-end on hardware (see above). Remaining:
 
 ## Log
 
+### 2026-09-09 — Tailscale seeding (module + runtime seeder), ported idiom
+
+Brought splanc's tailscale-seeding capability into the framework (splanc source
+not in this checkout; implemented in sbc-deploy's own idiom, which was extracted
+from splanc/pi so the patterns match).
+- `nix/modules/tailscale.nix` (new, opt-in, in commonModules + the default
+  bundle): `sbcDeploy.tailscale.enable` → tailscaled + openFirewall +
+  `trustedInterfaces = [ "tailscale0" ]`. Optional `ssh` and `authKeyFile`
+  (declarative boot-time bring-up). Node name = networking.hostName (board
+  identity). Auth never in the store.
+- `seed_tailscale` is a first-class Bazel target (sbc_deploy.sh subcommand +
+  `.seed_tailscale` in defs.bzl): reuses the deploy key (key_paths) and reads the
+  auth key from `secrets/tailscale-authkey` (override `--authkey-file`), then runs
+  `tailscale up --authkey` over SSH. Extra `tailscale up` flags after `--`. Host
+  defaults to `<hostname>.local` like the ssh target. (Superseded the earlier
+  standalone seed_tailscale.sh, now removed.)
+- hello-amd64 network.nix enables it; README "Tailscale" section added.
+
+Verified in-container: bash -n; nix-instantiate --parse (module + flake); bazel
+build of deploy_live + installer targets. NOT hardware-verified: needs a
+deploy_live to put tailscaled on amd-rig, then seed_tailscale.sh with a real
+tskey.
+
+### 2026-09-09 — installer UX: baked deploy key + SSH, copy progress, nomodeset
+
+Field-hardening from the first real amd64 install (an AMD Ryzen mini PC). Three
+fixes, all in the installer ISO / target:
+
+- **nomodeset by default.** The Ryzen box's console garbled once amdgpu KMS took
+  over after stage-2 (EFI framebuffer fine, then a bad mode); `nomodeset` on the
+  boot cmdline fixed it (confirmed on hardware). Baked into both
+  `nix/installer/iso.nix` (installer) and `nix/modules/x86-target.nix` (installed
+  system) — a headless appliance needs no KMS.
+- **Deploy key + reachable sshd in the live installer.** With the console
+  unusable pre-nomodeset, driving the install meant a painful blind dance
+  (manual sshd on an alt port, PAM-broken passwd, netcat-ing keys, read-only
+  /etc). Now iso.nix bakes the deploy key into root's authorized_keys (same
+  $SBC_DEPLOY_PUBKEY_FILE seam as ssh-deploy.nix), enables sshd +
+  openFirewall, and advertises mDNS as `<host>-installer.local`. So:
+  `ssh -i secrets/deploy_key root@amd-rig-installer.local` into the live
+  installer, no console needed.
+- **Copy progress gauge.** `nixos-install` was inscrutable. sbc-install.sh now
+  runs it in the background (log → /tmp/sbc-install.log, tailable over SSH) and
+  drives a whiptail `--gauge` from copied-vs-total store-path count
+  (`nix-store -qR` for the total). Added `nix` to the installer's tool PATH for
+  nix-store.
+
+**Verified in-container:** bash -n; nix-instantiate --parse iso.nix +
+x86-target.nix; bazel build of the installer target. **NOT verified on hardware
+yet** (this container has no x86 nix): the baked-key SSH path, the gauge math
+against a real copy, and that installation-cd honours the added openssh/avahi/
+authorizedKeys without conflict. Next real install is the test.
+
+Follow-up: the disk picker was offering the installer's OWN USB (/dev/sda) as a
+target. sbc-install.sh now detects the boot medium (parent disk of the /iso mount
+SOURCE, or the squashfs backing partition) and excludes it from the menu, with a
+belt-and-suspenders refusal if it's somehow selected.
+
+### 2026-09-09 — amd64: auto-managed x86_64-linux builder VM (Apple Silicon)
+
+Building the amd64 installer ISO on an Apple-Silicon Mac failed: the managed
+builder is aarch64-linux, so every x86_64-linux derivation hit "Failed to find a
+machine for remote build". Notably ALL the failing derivations were trivial
+per-config ones (etc-fstab, etc-hostname, configuration.nix, unit-*.service,
+users-groups.json, sbc-wifi-0, linux-*-modules-shrunk, …) — the heavy userland
+substitutes prebuilt as x86_64 from cache. So the builder just needs to *be* an
+x86_64-linux machine.
+
+- **New builder variant** `nix/builder/flake.nix#linux-builder-x86`: the same
+  packaged `darwin.linux-builder` but the GUEST system is forced to x86_64-linux
+  (`nixpkgs.hostPlatform = mkForce "x86_64-linux"`), so QEMU runs a full x86 guest
+  and the VM natively satisfies x86_64-linux builds. Chose this over adding
+  `boot.binfmt.emulatedSystems` to the aarch64 guest: binfmt changes the aarch64
+  guest closure → uncached → would need an aarch64-linux builder to realize = the
+  bootstrap trap this repo avoids. The x86_64 guest (nixos.revision=null) is
+  byte-identical to Hydra's x86_64-darwin guest → cache-served, no bootstrap.
+- **Dispatch is family-aware** (sbc_deploy.sh): a `case "$SBC_BOARD_FAMILY"` sets
+  BUILDER_ATTR (linux-builder / linux-builder-x86), BUILDER_SYSTEM (the
+  `--builders` systems field), BUILDER_QEMU (qemu-system-{aarch64,x86_64} for
+  PID match/teardown), and BUILDER_SSH_WAIT (90 vs 300s — x86 TCG boots slowly).
+- **Rosetta verdict:** Rosetta-for-Linux needs Apple Virtualization.framework;
+  the packaged darwin.linux-builder runs under QEMU, which can't use Rosetta. A
+  Rosetta builder would mean replacing the VM runner with a vz backend — a
+  separate build-out. For this all-trivial-derivations workload QEMU x86 is fine.
+
+**Verified in-container:** `bash -n` sbc_deploy.sh; `nix-instantiate --parse` the
+builder flake; family vars wired through start/stop/dispatch. **NOT verified (no
+darwin/nix here):** that `darwin.linux-builder.override` with the x86_64-linux
+guest module (a) produces a cache-served guest and (b) launches
+qemu-system-x86_64. If the override doesn't switch the qemu binary, fall back to a
+remote x86_64-linux builder via `--builder`. Next agent on the Mac: run
+`bazel run //examples/hello-amd64:hello.image_installer_base -- --hostname … --no-write`
+and confirm it boots the x86 VM + only trivial derivations build on it.
+
+### 2026-09-09 — amd64 (x86_64) support + an interactive install USB
+
+New goal: provision an **amd64 mini PC**, not just a Pi. Added a second platform
+"family" behind the existing board abstraction and a bootable installer for it.
+
+- **Board family seam.** `sbc_board` (deploy/boards.bzl) gains a `family` attr
+  (`raspberrypi` default | `x86_64`) written as a 3rd line of the board file;
+  `launch.sh` exports it as `$SBC_BOARD_FAMILY`. `mkSbcSystem` reads it (env over
+  arg, same getEnv seam as board/hostname) and branches: `raspberrypi` =
+  `nixos-raspberrypi.lib.nixosSystem` + sd-image (unchanged, byte-for-byte);
+  `x86_64` = stock `nixpkgs.lib.nixosSystem { system = "x86_64-linux"; }` + a new
+  `nix/modules/x86-target.nix` (UEFI/systemd-boot, by-label ext4 root + vfat ESP,
+  common initrd modules). Shared sbc modules were factored into `commonModules`
+  used by both branches. New predefined board `//deploy/boards:amd64-generic`.
+- **Installer USB (the "image" for amd64).** `mkSbcProject` exposes
+  `images.installerIso` / `installerIsoBase` for the x86 family (vs `sdImage*`
+  for rpi). `mkInstallerIso` builds a stock nixpkgs installation-cd that
+  (a) bakes the WHOLE target closure into the ISO store
+  (`system.extraDependencies`) so install is fully OFFLINE, and (b) auto-runs a
+  curses installer on tty1 (`nix/installer/{iso.nix,sbc-install.sh}`): whiptail
+  disk picker → shows the GPT layout → final ERASE confirm → sgdisk/mkfs/mount →
+  `nixos-install --system <closure>` → reboot. Hand-rolled partitioner (no disko,
+  no runtime nix eval) = robust + offline. The operator-intervention curses flow
+  was an explicit user ask.
+- **Bazel targets.** `sbc_application` now also emits `image_installer` /
+  `image_installer_base` (both target sets always emitted; the wrong-family one
+  builds a missing nix attr and fails clearly). `cmd_image` (sbc_deploy.sh) now
+  also finds `*.iso`; `flash_image` dd's it to USB unchanged. `deploy_live` /
+  `update` / `ssh` / `keys` are arch-agnostic and needed NO change.
+- **sbc-base.nix** RPi wireless-firmware bits are now gated on
+  `pkgs.stdenv.hostPlatform.isAarch64`, so x86 keeps the generic linux-firmware
+  blob (its NIC/Wi-Fi need it).
+- **Example:** `examples/hello-amd64/` (dogfood; reuses hello-sbc's lock — no new
+  flake inputs). README gained an "amd64 mini PCs" section.
+
+**Verified (in-container):** `bazel build //...` clean; the amd64 example emits
+`image_installer[_base]`; `amd64-generic.board` is a correct 3-line file
+(`generic-x86` / `` / `x86_64`); `bash -n` on all scripts; `nix-instantiate
+--parse` on every new/edited Nix file. **NOT verified (no nix eval/build here —
+OOMs; needs an x86_64-linux host or builder):** the ISO actually builds, the
+target closure lands in the ISO store, the offline `nixos-install --system`
+succeeds, and a real mini PC boots the USB → curses flow → installs → reboots.
+That's the merge gate for the next agent with an x86 builder. Watch: whether
+`system.extraDependencies` alone registers the closure in the ISO's nix DB (else
+add `isoImage.storeContents`); mini-PC-specific initrd modules.
+
 ### 2026-08-19 — `update`: detect board + read committed capability profile
 
 Builds on the hostname-identity work (#7). New `.update` deploy mode: the "just

@@ -23,17 +23,28 @@ in {
       (raspberrypi-wireless-firmware) is a separate closure path and is kept, so
       Wi-Fi/Bluetooth should still work — but if a peripheral needs a generic
       blob, set this to false to include the full linux-firmware again.
+
+      RASPBERRY PI ONLY: this trim is gated on an aarch64 host, because it hinges
+      on the Pi's own wireless firmware being a separate closure path. On an
+      amd64 (x86_64) system the generic linux-firmware blob is what drives the
+      NIC/Wi-Fi/GPU, so it is always kept regardless of this option.
     '';
   };
 
   config = {
-  # Drop the generic firmware blob by default (see the option above)…
-  hardware.enableRedistributableFirmware = lib.mkIf cfg.leanFirmware (lib.mkForce false);
+  # Drop the generic firmware blob by default on the Pi (see the option above).
+  # Gated on aarch64: an x86 mini PC needs the generic blob for its NIC/Wi-Fi/GPU,
+  # so this trim never fires there and enableRedistributableFirmware keeps its
+  # (true) default.
+  hardware.enableRedistributableFirmware =
+    lib.mkIf (cfg.leanFirmware && pkgs.stdenv.hostPlatform.isAarch64) (lib.mkForce false);
   # …but the Pi's own Wi-Fi/Bluetooth firmware is pulled in via that same flag in
   # nixpkgs' all-firmware.nix, so it would vanish too. Add it back explicitly so
   # Wi-Fi/BT keep working without the 731 MB generic blob. (raspberrypi-firmware,
   # the bootloader/GPU firmware, comes from the board module and is unaffected.)
-  hardware.firmware = lib.mkIf cfg.leanFirmware [ pkgs.raspberrypiWirelessFirmware ];
+  # Also aarch64-only — raspberrypiWirelessFirmware is a Pi package.
+  hardware.firmware =
+    lib.mkIf (cfg.leanFirmware && pkgs.stdenv.hostPlatform.isAarch64) [ pkgs.raspberrypiWirelessFirmware ];
 
   # mDNS: advertise <hostName>.local and resolve *.local.
   services.avahi = {
