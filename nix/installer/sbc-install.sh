@@ -53,6 +53,13 @@ dmesg --console-level 1 >/dev/null 2>&1 || dmesg -n 1 >/dev/null 2>&1 || true
 export TERM="${TERM:-linux}"   # newt/whiptail needs a real terminfo type
 sleep 1                        # let the VT settle before the first curses draw
 
+# Prime newt/SLang. The very first curses dialog on a fresh Linux VT comes up
+# BLANK until one full init/finish cycle has happened (observed: the disk menu
+# drew blank, every subsequent dialog rendered fine). Do a throwaway infobox so
+# the real disk menu is effectively the second draw and renders correctly.
+whiptail --title "$BT" --infobox "Starting the sbc-deploy installer…" 7 52 || true
+sleep 1
+
 # --- 1. choose the target disk ------------------------------------------------
 # Identify the installer's OWN boot medium (the USB stick) so we never offer it as
 # a target — installing onto the disk you booted from is always wrong. The live
