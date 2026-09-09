@@ -57,6 +57,7 @@
         app-service = modulesDir + "/app-service.nix";
         identity = modulesDir + "/identity.nix";
         wifi = modulesDir + "/wifi.nix";
+        tailscale = modulesDir + "/tailscale.nix";
         spi = modulesDir + "/spi.nix";
       };
 
@@ -202,6 +203,7 @@
             sbcModules.app-service
             sbcModules.identity
             sbcModules.wifi
+            sbcModules.tailscale
             leanDocsModule
             hostIdentityModule
           ];
@@ -385,7 +387,7 @@
 
       nixosModules = sbcModules // {
         # `default` = the always-on bundle, for `imports = [ ...default ]`.
-        default = { imports = [ sbcModules.sbc-base sbcModules.ssh-deploy sbcModules.app-service sbcModules.identity sbcModules.wifi ]; };
+        default = { imports = [ sbcModules.sbc-base sbcModules.ssh-deploy sbcModules.app-service sbcModules.identity sbcModules.wifi sbcModules.tailscale ]; };
       };
     };
 }

@@ -95,6 +95,26 @@ The core framework is proven end-to-end on hardware (see above). Remaining:
 
 ## Log
 
+### 2026-09-09 — Tailscale seeding (module + runtime seeder), ported idiom
+
+Brought splanc's tailscale-seeding capability into the framework (splanc source
+not in this checkout; implemented in sbc-deploy's own idiom, which was extracted
+from splanc/pi so the patterns match).
+- `nix/modules/tailscale.nix` (new, opt-in, in commonModules + the default
+  bundle): `sbcDeploy.tailscale.enable` → tailscaled + openFirewall +
+  `trustedInterfaces = [ "tailscale0" ]`. Optional `ssh` and `authKeyFile`
+  (declarative boot-time bring-up). Node name = networking.hostName (board
+  identity). Auth never in the store.
+- `deploy/scripts/seed_tailscale.sh` (new, mirrors seed_wifi.sh): `--authkey`
+  runs `tailscale up` over the deploy SSH (immediate); `--status` / `--down`.
+  tailscaled persists node key → one-time.
+- hello-amd64 network.nix enables it; README "Tailscale" section added.
+
+Verified in-container: bash -n; nix-instantiate --parse (module + flake); bazel
+build of deploy_live + installer targets. NOT hardware-verified: needs a
+deploy_live to put tailscaled on amd-rig, then seed_tailscale.sh with a real
+tskey.
+
 ### 2026-09-09 — installer UX: baked deploy key + SSH, copy progress, nomodeset
 
 Field-hardening from the first real amd64 install (an AMD Ryzen mini PC). Three

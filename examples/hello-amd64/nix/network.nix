@@ -11,4 +11,11 @@
   # sbcDeploy.wifi.networks = [
   #   { ssid = "Home Wi-Fi"; psk = "hunter2"; priority = 100; }
   # ];
+
+  # Join the tailnet. tailscaled is baked into the image; the auth key is seeded
+  # at runtime (never in git / the store) after the box is up:
+  #   deploy/scripts/seed_tailscale.sh --host amd-rig.local \
+  #       --ssh-key secrets/deploy_key --authkey tskey-…
+  # The node appears on the tailnet as its hostname (e.g. amd-rig).
+  sbcDeploy.tailscale.enable = true;
 }

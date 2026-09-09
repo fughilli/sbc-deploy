@@ -353,6 +353,32 @@ deploy/scripts/seed_wifi.sh --host myboard.local --remove CoffeeShop
 Baked + seeded compose by `priority`. Keep at least one reliable network baked so
 the board is always reachable even with an empty `/etc`.
 
+## Tailscale
+
+Opt a board onto your tailnet — reach it from anywhere, no LAN/mDNS needed.
+`tailscaled` is baked into the image; the auth key is provisioned out of band
+(never in git or the store). Enable the module in a `systemModule`:
+
+```nix
+sbcDeploy.tailscale.enable = true;   # optionally: ssh = true; authKeyFile = "/var/lib/sbc/tailscale.authkey";
+```
+
+then, once the board is up, seed the key at runtime (like `seed_wifi.sh`):
+
+```sh
+deploy/scripts/seed_tailscale.sh --host myboard.local --ssh-key secrets/deploy_key \
+    --authkey tskey-auth-…                     # tailscale up over the deploy SSH
+deploy/scripts/seed_tailscale.sh --host myboard.local --ssh-key secrets/deploy_key --status
+deploy/scripts/seed_tailscale.sh --host myboard.local --ssh-key secrets/deploy_key --down
+```
+
+The node joins as its hostname (the board identity, e.g. `myboard`). `tailscaled`
+persists its node key under `/var/lib/tailscale`, so it's a one-time step —
+membership survives reboots and redeploys. Prefer fully declarative? Set
+`authKeyFile` to a device path and drop the key there; tailscaled connects on
+boot. `tailscale0` is a trusted firewall interface, so the board's SSH/app ports
+are reachable over the tailnet without opening them to the LAN.
+
 ## Requirements
 
 - `bazel`/`bazelisk` (pinned 7.7.1) — for the targets.
