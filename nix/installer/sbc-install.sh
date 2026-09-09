@@ -44,23 +44,44 @@ bail() {
 [ -e "$TOPLEVEL" ] || fail "baked system closure not found at $TOPLEVEL"
 
 # --- 1. choose the target disk ------------------------------------------------
+# Identify the installer's OWN boot medium (the USB stick) so we never offer it as
+# a target — installing onto the disk you booted from is always wrong. The live
+# CD mounts its filesystem at /iso; the SOURCE of that mount is a partition on the
+# USB, whose parent (PKNAME) is the disk to exclude. Fall back to the squashfs
+# store's backing partition if /iso isn't present.
+boot_disk=""
+boot_src="$(findmnt -n -o SOURCE --target /iso 2>/dev/null || true)"
+[ -n "$boot_src" ] || boot_src="$(findmnt -n -o SOURCE --target /nix/.ro-store 2>/dev/null || true)"
+if [ -n "$boot_src" ] && [ -b "$boot_src" ]; then
+  pk="$(lsblk -no PKNAME "$boot_src" 2>/dev/null | head -n1 | tr -d ' ')"
+  if [ -n "$pk" ]; then boot_disk="/dev/$pk"; else boot_disk="$boot_src"; fi
+fi
+
 # One row per whole disk: NAME SIZE TYPE MODEL (MODEL may contain spaces, so it
-# is the trailing field). Build a whiptail --menu of tag/description pairs.
+# is the trailing field). Build a whiptail --menu of tag/description pairs,
+# skipping the boot medium.
 menu_args=()
 while read -r name size type model; do
   [ "$type" = "disk" ] || continue
+  [ -n "$boot_disk" ] && [ "$name" = "$boot_disk" ] && continue   # never target the USB we booted from
   # Collapse an empty model to a placeholder so the description is never blank.
   [ -n "$model" ] || model="disk"
   menu_args+=("$name" "$size  $model")
 done < <(lsblk -dpno NAME,SIZE,TYPE,MODEL)
 
-[ "${#menu_args[@]}" -gt 0 ] || fail "no disks found (lsblk listed no TYPE=disk devices)"
+if [ "${#menu_args[@]}" -eq 0 ]; then
+  fail "no installable disks found (only the boot medium ${boot_disk:-?} was present). Attach an internal disk and retry."
+fi
 
+menu_text="Select the disk to install ${TARGET_HOST} onto.\n\nEVERYTHING on the chosen disk will be ERASED."
+[ -n "$boot_disk" ] && menu_text="${menu_text}\n\n(The installer USB, ${boot_disk}, is hidden.)"
 DEV="$(whiptail --title "$BT" \
-  --menu "Select the disk to install ${TARGET_HOST} onto.\n\nEVERYTHING on the chosen disk will be ERASED." \
+  --menu "$menu_text" \
   20 78 8 "${menu_args[@]}" 3>&1 1>&2 2>&3)" || bail "No disk selected."
 [ -n "$DEV" ] || bail "No disk selected."
 [ -b "$DEV" ] || fail "$DEV is not a block device"
+# Belt and suspenders: refuse the boot medium even if detection above missed it.
+[ -n "$boot_disk" ] && [ "$DEV" = "$boot_disk" ] && fail "refusing to install onto the installer's own USB ($DEV)"
 
 # --- 2. show the layout + final confirmation ----------------------------------
 current="$(lsblk -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINT "$DEV" 2>/dev/null || true)"

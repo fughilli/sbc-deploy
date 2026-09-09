@@ -125,6 +125,11 @@ yet** (this container has no x86 nix): the baked-key SSH path, the gauge math
 against a real copy, and that installation-cd honours the added openssh/avahi/
 authorizedKeys without conflict. Next real install is the test.
 
+Follow-up: the disk picker was offering the installer's OWN USB (/dev/sda) as a
+target. sbc-install.sh now detects the boot medium (parent disk of the /iso mount
+SOURCE, or the squashfs backing partition) and excludes it from the menu, with a
+belt-and-suspenders refusal if it's somehow selected.
+
 ### 2026-09-09 — amd64: auto-managed x86_64-linux builder VM (Apple Silicon)
 
 Building the amd64 installer ISO on an Apple-Silicon Mac failed: the managed
