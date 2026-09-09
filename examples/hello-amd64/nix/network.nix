@@ -13,9 +13,9 @@
   # ];
 
   # Join the tailnet. tailscaled is baked into the image; the auth key is seeded
-  # at runtime (never in git / the store) after the box is up:
-  #   deploy/scripts/seed_tailscale.sh --host amd-rig.local \
-  #       --ssh-key secrets/deploy_key --authkey tskey-…
+  # at runtime (never in git / the store) after the box is up. Put a key in
+  # secrets/tailscale-authkey, then:
+  #   bazel run //examples/hello-amd64:hello.seed_tailscale -- amd-rig.local
   # The node appears on the tailnet as its hostname (e.g. amd-rig).
   sbcDeploy.tailscale.enable = true;
 }

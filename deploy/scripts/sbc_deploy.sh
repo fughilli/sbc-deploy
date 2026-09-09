@@ -50,6 +50,10 @@ HOSTNAME_ATTR="${SBC_HOSTNAME:-}"
 # variant, baked by the target (image mode uses --attr instead). NOT the identity.
 NIXOS_ATTR="${SBC_NIXOS_ATTR:-}"
 SECRETS_DIR_OVERRIDE="${SBC_DEPLOY_KEY_DIR:-}"
+# Tailscale auth key file for the seed_tailscale target. Default: a
+# `tailscale-authkey` file in the same gitignored secrets/ dir as the deploy key.
+# Override with --authkey-file (absolute, or repo-root-relative).
+TS_AUTHKEY_FILE="${SBC_TAILSCALE_AUTHKEY_FILE:-}"
 
 DEVICE=""
 WRITE=1
@@ -409,6 +413,7 @@ parse_common_flags() {
       --detect-cmd)   export SBC_DETECT_CMD="$2"; shift 2 ;;  # update: remote probe echoing SBC_* caps
       --framework-subdir) FRAMEWORK_SUBDIR="$2"; shift 2 ;;
       --secrets-dir)  SECRETS_DIR_OVERRIDE="$2"; shift 2 ;;
+      --authkey-file) TS_AUTHKEY_FILE="$2"; shift 2 ;;  # seed_tailscale: path to the tailscale auth key
       --device)          DEVICE="$2"; shift 2 ;;
       --no-write|--no_write) WRITE=0; shift ;;
       --user)            DEPLOY_USER="$2"; shift 2 ;;
@@ -840,6 +845,58 @@ cmd_ssh() {
 }
 
 # ---------------------------------------------------------------------------
+# seed_tailscale — bring the board up on the tailnet via `tailscale up --authkey`
+# over the deploy SSH. Reuses the deploy key (like ssh/deploy) and reads the auth
+# key from a gitignored secrets file (secrets/tailscale-authkey by default), so
+# the key never lands in git or the nix store. Requires sbcDeploy.tailscale.enable
+# in the deployed config (nix/modules/tailscale.nix). One-time: tailscaled
+# persists its node key. Extra `tailscale up` flags go after a literal `--`.
+# ---------------------------------------------------------------------------
+cmd_seed_tailscale() {
+  command -v ssh >/dev/null 2>&1 || die "'ssh' not found."
+  key_paths
+  [[ -f "$PRIV" ]] || die "deploy private key not found at $PRIV. Generate it with the .keys target (keys init) and image/deploy the board first."
+  chmod 600 "$PRIV" 2>/dev/null || true
+
+  # Resolve the auth key file: --authkey-file (absolute or repo-root-relative),
+  # else secrets/tailscale-authkey next to the deploy key.
+  local akf
+  if [[ -n "$TS_AUTHKEY_FILE" ]]; then
+    case "$TS_AUTHKEY_FILE" in
+      /*) akf="$TS_AUTHKEY_FILE" ;;
+      *)  akf="$(repo_root)/$TS_AUTHKEY_FILE" ;;
+    esac
+  else
+    akf="$SECRETS/tailscale-authkey"
+  fi
+  [[ -f "$akf" ]] || die "tailscale auth key file not found at $akf. Put a reusable or ephemeral auth key there (https://login.tailscale.com/admin/settings/keys), or pass --authkey-file <path>. It stays out of git/the store (secrets/ is gitignored)."
+  local authkey; authkey="$(tr -d '[:space:]' < "$akf")"
+  [[ -n "$authkey" ]] || die "tailscale auth key file $akf is empty."
+
+  local host target
+  host="${POSITIONAL[0]:-}"
+  # Default target mirrors the ssh target: the identity if --hostname was given,
+  # else the config's baked hostName (the nixos attr), else the project name.
+  [[ -n "$host" ]] || host="${HOSTNAME_ATTR:-${NIXOS_ATTR:-$PROJECT}}.local"
+  target="${DEPLOY_USER}@${host}"
+  local ssh_opts=(-i "$PRIV" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
+
+  # Build the remote `tailscale up`; quote the key + any extra flags for the
+  # remote shell. The node name defaults (on the device) to networking.hostName,
+  # i.e. the board identity, so no --hostname is needed here.
+  local up="tailscale up --authkey $(printf %q "$authkey")"
+  local f
+  for f in ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}; do up="$up $(printf %q "$f")"; done
+
+  echo "==> Seeding Tailscale on $target (auth key: $akf)" >&2
+  ssh "${ssh_opts[@]}" "$target" "$up" \
+    || die "tailscale up failed on $target (is sbcDeploy.tailscale.enable set and deployed to the board with deploy_live?)"
+  echo "==> tailscale status:" >&2
+  ssh "${ssh_opts[@]}" "$target" "tailscale status" || true
+  echo "done." >&2
+}
+
+# ---------------------------------------------------------------------------
 # builder — start the sized-up linux-builder VM (macOS). Long-running; leave it
 # up in its terminal. Needs the framework in-tree (--framework-subdir).
 # ---------------------------------------------------------------------------
@@ -896,6 +953,7 @@ case "$SUBCMD" in
   deploy)  cmd_deploy ;;
   update)  cmd_update ;;
   ssh)     cmd_ssh ;;
+  seed_tailscale) cmd_seed_tailscale ;;
   builder) cmd_builder ;;
   cache)   cmd_cache ;;
   ""|-h|--help)
@@ -906,6 +964,7 @@ sbc-deploy: usage via the Bazel targets created by the sbc_application macro:
   bazel run //path:NAME.deploy_live   -- <host-or-ip> [--hostname <name>] [--user root] [--builder <spec> | --cross] [--keep-builder]
   bazel run //path:NAME.update        -- <host-or-ip> [--user root]   # detect board + committed profile, then deploy
   bazel run //path:NAME.ssh           -- [host-or-ip] [--hostname <name>] [--user root] [-- <ssh args>]
+  bazel run //path:NAME.seed_tailscale -- [host-or-ip] [--authkey-file <path>] [-- <tailscale up flags>]
   bazel run //path:NAME.keys          -- {init|ensure|rotate|path|pub}
 
 On aarch64-darwin (Apple Silicon) an image can't be built natively. By DEFAULT
@@ -919,5 +978,5 @@ own aarch64-linux builder, or --cross to cross-compile locally (no builder, but
 rebuilds from source; best on x86_64-linux). See the README.
 EOF
     exit 2 ;;
-  *) die "unknown subcommand '$SUBCMD' (expected image|deploy|update|ssh|keys|builder|cache)" ;;
+  *) die "unknown subcommand '$SUBCMD' (expected image|deploy|update|ssh|seed_tailscale|keys|builder|cache)" ;;
 esac

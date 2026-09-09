@@ -105,9 +105,12 @@ from splanc/pi so the patterns match).
   `trustedInterfaces = [ "tailscale0" ]`. Optional `ssh` and `authKeyFile`
   (declarative boot-time bring-up). Node name = networking.hostName (board
   identity). Auth never in the store.
-- `deploy/scripts/seed_tailscale.sh` (new, mirrors seed_wifi.sh): `--authkey`
-  runs `tailscale up` over the deploy SSH (immediate); `--status` / `--down`.
-  tailscaled persists node key → one-time.
+- `seed_tailscale` is a first-class Bazel target (sbc_deploy.sh subcommand +
+  `.seed_tailscale` in defs.bzl): reuses the deploy key (key_paths) and reads the
+  auth key from `secrets/tailscale-authkey` (override `--authkey-file`), then runs
+  `tailscale up --authkey` over SSH. Extra `tailscale up` flags after `--`. Host
+  defaults to `<hostname>.local` like the ssh target. (Superseded the earlier
+  standalone seed_tailscale.sh, now removed.)
 - hello-amd64 network.nix enables it; README "Tailscale" section added.
 
 Verified in-container: bash -n; nix-instantiate --parse (module + flake); bazel

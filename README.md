@@ -363,13 +363,18 @@ Opt a board onto your tailnet — reach it from anywhere, no LAN/mDNS needed.
 sbcDeploy.tailscale.enable = true;   # optionally: ssh = true; authKeyFile = "/var/lib/sbc/tailscale.authkey";
 ```
 
-then, once the board is up, seed the key at runtime (like `seed_wifi.sh`):
+then drop a Tailscale auth key (reusable or ephemeral, from
+<https://login.tailscale.com/admin/settings/keys>) into
+`secrets/tailscale-authkey` — it lives next to the deploy key and is gitignored,
+so it never enters git or the store — and, once the board is up, run the
+`seed_tailscale` target. It reuses the deploy key and reads that file, then runs
+`tailscale up` over SSH:
 
 ```sh
-deploy/scripts/seed_tailscale.sh --host myboard.local --ssh-key secrets/deploy_key \
-    --authkey tskey-auth-…                     # tailscale up over the deploy SSH
-deploy/scripts/seed_tailscale.sh --host myboard.local --ssh-key secrets/deploy_key --status
-deploy/scripts/seed_tailscale.sh --host myboard.local --ssh-key secrets/deploy_key --down
+bazel run //path:myboard.seed_tailscale                       # host defaults to <hostname>.local
+bazel run //path:myboard.seed_tailscale -- 192.168.1.42       # explicit host/IP
+bazel run //path:myboard.seed_tailscale -- -- --ssh --advertise-tags=tag:sbc   # extra `tailscale up` flags
+# custom key path: bazel run //path:myboard.seed_tailscale -- --authkey-file secrets/other.key
 ```
 
 The node joins as its hostname (the board identity, e.g. `myboard`). `tailscaled`

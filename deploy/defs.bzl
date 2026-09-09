@@ -49,6 +49,9 @@ image targets come in two families; use the pair matching your board's `family`:
     # Convenience — ssh in with the deploy key (default <hostname>.local, or
     # <--hostname>.local):
     bazel run //consumer:myboard.ssh           -- [host-or-ip] [--hostname <name>]
+    # Join the tailnet — reads the auth key from secrets/tailscale-authkey
+    # (override: --authkey-file <path>), runs `tailscale up` over the deploy SSH:
+    bazel run //consumer:myboard.seed_tailscale -- [host-or-ip] [-- <tailscale up flags>]
     bazel run //consumer:myboard.keys          -- {init|ensure|rotate|path|pub}
 
 Each is an sh_binary whose src is a small launcher (launch.sh) that execs a
@@ -346,6 +349,12 @@ def sbc_application(
     # Convenience: ssh to the board with the deploy key (default <hostname>.local,
     # or <--hostname>.local when the operator overrides the identity).
     _target("ssh", ["ssh"] + base + ["--nixos-attr", hostname])
+
+    # Seed Tailscale: `tailscale up --authkey` over the deploy SSH, reading the
+    # auth key from secrets/tailscale-authkey (override with --authkey-file).
+    # Reuses the deploy key + secrets dir like ssh/deploy; requires
+    # sbcDeploy.tailscale.enable in the deployed config.
+    _target("seed_tailscale", ["seed_tailscale"] + base + ["--nixos-attr", hostname])
 
     _target("keys", ["keys"] + base)
 
