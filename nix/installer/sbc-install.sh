@@ -43,12 +43,15 @@ bail() {
 [ "$(id -u)" -eq 0 ] || fail "must run as root"
 [ -e "$TOPLEVEL" ] || fail "baked system closure not found at $TOPLEVEL"
 
-# Stop kernel messages from printing over the curses UI, and reset the terminal
-# so the first whiptail screen isn't drawn on top of the boot log. (The ISO also
-# lowers boot.consoleLogLevel and disallocates the VT via the systemd unit; this
-# is the belt-and-suspenders from inside the script.)
+# Stop kernel messages from printing over the curses UI. The ISO already clears
+# the VT (TTYVTDisallocate) and lowers boot.consoleLogLevel, so the screen is
+# blank by the time we get here — do NOT send a raw RIS reset (\033c): issuing it
+# immediately before the first whiptail corrupts newt's screen init and the first
+# dialog draws blank. Just ensure TERM and let the freshly (dis)allocated VT
+# settle so newt sizes/draws correctly on its first invocation.
 dmesg --console-level 1 >/dev/null 2>&1 || dmesg -n 1 >/dev/null 2>&1 || true
-printf '\033c' 2>/dev/null || true   # RIS: reset terminal + clear scrollback
+export TERM="${TERM:-linux}"   # newt/whiptail needs a real terminfo type
+sleep 1                        # let the VT settle before the first curses draw
 
 # --- 1. choose the target disk ------------------------------------------------
 # Identify the installer's OWN boot medium (the USB stick) so we never offer it as
