@@ -40,6 +40,9 @@ This creates targets for the three deployment modes (+ key management):
     bazel run //consumer:myboard.ssh           -- [host-or-ip] [--hostname <name>]
     bazel run //consumer:myboard.keys          -- {init|ensure|rotate|path|pub}
 
+    # Seed WiFi onto a running board (persistent, not baked; survives redeploys):
+    bazel run //consumer:myboard.seed_wifi     -- [host-or-ip] [--wifi-file <networks.yaml>] [--list] [--remove <ssid>]
+
 Each is an sh_binary whose src is a small launcher (launch.sh) that execs a
 nixpkgs-vendored bash on the real script (sbc_deploy.sh) — so the tool runs
 under a hermetic bash, not the host's system bash (macOS ships 3.2). Per-project
@@ -236,6 +239,15 @@ def sbc_application(
     # Convenience: ssh to the board with the deploy key (default <hostname>.local,
     # or <--hostname>.local when the operator overrides the identity).
     _target("ssh", ["ssh"] + base + ["--nixos-attr", hostname])
+
+    # Seed WiFi networks onto a RUNNING board (persistent nmcli profiles, not
+    # baked into the image) — from the `wifi_config_file` YAML (reused via the
+    # launcher's SBC_WIFI_CONFIG_JSON) or a runtime `--wifi-file <networks.yaml>`.
+    # Survives redeploys; keeps secret PSKs out of the nix store. e.g.
+    #   bazel run //consumer:myboard.seed_wifi -- myboard.local
+    #   bazel run //consumer:myboard.seed_wifi -- myboard.local --wifi-file wifi.yaml
+    #   bazel run //consumer:myboard.seed_wifi -- myboard.local --list
+    _target("seed_wifi", ["seed-wifi"] + base + ["--nixos-attr", hostname])
 
     _target("keys", ["keys"] + base)
 

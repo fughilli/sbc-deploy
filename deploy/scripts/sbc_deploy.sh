@@ -78,6 +78,11 @@ LEAN="${SBC_LEAN:-}"
 FRAMEWORK_SUBDIR="${SBC_DEPLOY_FRAMEWORK_SUBDIR:-}"
 EXTRA_ARGS=()
 
+# seed-wifi: persist WiFi networks onto a running board via nmcli (cmd_seed_wifi).
+SEED_WIFI_FILE=""       # --wifi-file <yaml/json>; overrides the baked wifi_config_file
+SEED_ACTION="add"       # add | list | remove
+SEED_REMOVE_SSID=""     # --remove <ssid>
+
 die() { echo "ERROR: $*" >&2; exit 1; }
 
 # Populate FRAMEWORK_ARGS with an --override-input that points the consumer's
@@ -343,6 +348,9 @@ parse_common_flags() {
       --detect-cmd)   export SBC_DETECT_CMD="$2"; shift 2 ;;  # update: remote probe echoing SBC_* caps
       --framework-subdir) FRAMEWORK_SUBDIR="$2"; shift 2 ;;
       --secrets-dir)  SECRETS_DIR_OVERRIDE="$2"; shift 2 ;;
+      --wifi-file)    SEED_WIFI_FILE="$2"; shift 2 ;;   # seed-wifi: networks source
+      --list)         SEED_ACTION="list"; shift ;;      # seed-wifi: list seeded profiles
+      --remove)       SEED_ACTION="remove"; SEED_REMOVE_SSID="$2"; shift 2 ;;  # seed-wifi
       --device)          DEVICE="$2"; shift 2 ;;
       --no-write|--no_write) WRITE=0; shift ;;
       --user)            DEPLOY_USER="$2"; shift 2 ;;
@@ -823,14 +831,118 @@ fi
 # for image/deploy; harmless for keys/ssh/builder (no nix eval of the image).
 [[ -n "$LEAN" ]] && export SBC_LEAN=1
 
+# ---------------------------------------------------------------------------
+# seed-wifi — persist WiFi networks onto a RUNNING board, out of band.
+#
+# The "seeded" layer (nmcli -> persistent /etc/NetworkManager/system-connections,
+# profiles named seed-<ssid>) composes with the baked layer by autoconnect-
+# priority and is NEVER clobbered by switch-to-configuration — so a redeploy keeps
+# field WiFi, and secret PSKs need not enter the image/nix store. Networks come
+# from the sbc_application `wifi_config_file` (the launcher exported it as
+# $SBC_WIFI_CONFIG_JSON) or a runtime `--wifi-file <networks.yaml>` override; both
+# use the same schema as the baked path (a list, or {networks:[...]}, of
+# {ssid, psk?, priority?, hidden?}). JSON is valid YAML, so one parser reads both.
+# ---------------------------------------------------------------------------
+cmd_seed_wifi() {
+  command -v ssh >/dev/null 2>&1 || die "'ssh' not found."
+  key_paths
+  [[ -f "$PRIV" ]] || die "deploy private key not found at $PRIV. Generate it with the .keys target and image/deploy the board first."
+  chmod 600 "$PRIV" 2>/dev/null || true
+
+  local host target
+  host="${POSITIONAL[0]:-}"
+  [[ -n "$host" ]] || host="${HOSTNAME_ATTR:-${NIXOS_ATTR:-$PROJECT}}.local"
+  target="${DEPLOY_USER}@${host}"
+  # -n: never read stdin, so ssh inside the `while read` loop below doesn't slurp
+  # the network list.
+  local -a SSH=(ssh -n -i "$PRIV" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
+  remote() { "${SSH[@]}" "$target" "$@"; }
+
+  case "$SEED_ACTION" in
+    list)
+      echo "==> seeded WiFi profiles on $host:" >&2
+      remote "nmcli -f NAME,TYPE,AUTOCONNECT-PRIORITY connection show | awk 'NR==1 || /^seed-/'"
+      return 0 ;;
+    remove)
+      [[ -n "$SEED_REMOVE_SSID" ]] || die "--remove needs an SSID"
+      echo "==> removing seed-$SEED_REMOVE_SSID from $host" >&2
+      remote "nmcli connection delete 'seed-$SEED_REMOVE_SSID'"
+      return 0 ;;
+  esac
+
+  local src=""
+  if [[ -n "$SEED_WIFI_FILE" ]]; then
+    [[ -f "$SEED_WIFI_FILE" ]] || die "no such WiFi config file: $SEED_WIFI_FILE"
+    src="$SEED_WIFI_FILE"
+  elif [[ -n "${SBC_WIFI_CONFIG_JSON:-}" ]]; then
+    src="$SBC_WIFI_CONFIG_JSON"
+  else
+    die "no WiFi config to seed: set wifi_config_file on the sbc_application, or pass --wifi-file <networks.yaml>."
+  fi
+  command -v python3 >/dev/null 2>&1 || die "'python3' not found (needed to parse the WiFi config)."
+
+  # nmcli add for one network. Profile name seed-<ssid>; recreated idempotently so
+  # re-seeding updates the psk. Runs on the board over the deploy key.
+  seed_one() {
+    local ssid="$1" psk="$2" prio="${3:-50}" hidden="${4:-no}"
+    [[ -n "$ssid" ]] || return 0
+    local args="type wifi con-name 'seed-$ssid' ssid '$ssid' connection.autoconnect-priority $prio ipv4.method auto ipv6.method auto"
+    [[ "$hidden" == "yes" ]] && args="$args wifi.hidden yes"
+    [[ -n "$psk" ]] && args="$args wifi-sec.key-mgmt wpa-psk wifi-sec.psk '$psk'"
+    local sec="open"; [[ -n "$psk" ]] && sec="wpa-psk"
+    echo "  seeding '$ssid' (priority $prio, $sec)" >&2
+    remote "nmcli -t connection delete 'seed-$ssid' >/dev/null 2>&1 || true; nmcli connection add $args >/dev/null && echo '    ok'"
+  }
+
+  echo "==> seeding WiFi onto $host from ${SEED_WIFI_FILE:-baked wifi_config_file} (deploy key: $PRIV)" >&2
+  # Parse a bare list or {networks:[...]} of {ssid,psk?,priority?,hidden?}. \x1f
+  # (unit separator) delimits fields so an empty psk (open net) doesn't collapse.
+  python3 - "$src" <<'PY' | while IFS=$'\x1f' read -r ssid psk prio hidden; do
+import json, sys
+text = open(sys.argv[1]).read()
+try:
+    nets = json.loads(text)                       # JSON (or the baked JSON config)
+except Exception:
+    try:
+        import yaml; nets = yaml.safe_load(text)  # real YAML if PyYAML present
+    except Exception:                             # minimal dep-free YAML list parser
+        nets, cur = [], None
+        for raw in text.splitlines():
+            line = raw.split('#', 1)[0].rstrip()
+            if not line.strip():
+                continue
+            s = line.strip()
+            if s.startswith('- '):
+                if cur is not None: nets.append(cur)
+                cur = {}; s = s[2:].strip()
+            if ':' in s and cur is not None:
+                k, _, v = s.partition(':'); cur[k.strip()] = v.strip().strip('"').strip("'")
+        if cur: nets.append(cur)
+if isinstance(nets, dict):
+    nets = nets.get('networks', [])
+for n in (nets or []):
+    if not isinstance(n, dict) or not n.get('ssid'):
+        continue
+    hidden = 'yes' if str(n.get('hidden', '')).lower() in ('true', 'yes', '1') else 'no'
+    print('\x1f'.join([str(n.get('ssid', '')), str(n.get('psk', '') or ''),
+                       str(n.get('priority', '') or 50), hidden]))
+PY
+    seed_one "$ssid" "$psk" "$prio" "$hidden"
+  done
+  echo "==> reloading NetworkManager on $host" >&2
+  remote "nmcli connection reload"
+  echo "==> done. Verify with: bazel run //…:NAME.ssh -- $host -- nmcli device status" >&2
+}
+
 case "$SUBCMD" in
-  keys)    cmd_keys ;;
-  image)   cmd_image ;;
-  deploy)  cmd_deploy ;;
-  update)  cmd_update ;;
-  ssh)     cmd_ssh ;;
-  builder) cmd_builder ;;
-  cache)   cmd_cache ;;
+  keys)      cmd_keys ;;
+  image)     cmd_image ;;
+  deploy)    cmd_deploy ;;
+  update)    cmd_update ;;
+  ssh)       cmd_ssh ;;
+  seed-wifi) cmd_seed_wifi ;;
+  builder)   cmd_builder ;;
+  cache)     cmd_cache ;;
   ""|-h|--help)
     cat >&2 <<EOF
 sbc-deploy: usage via the Bazel targets created by the sbc_application macro:
@@ -839,6 +951,7 @@ sbc-deploy: usage via the Bazel targets created by the sbc_application macro:
   bazel run //path:NAME.deploy_live   -- <host-or-ip> [--hostname <name>] [--user root] [--builder <spec> | --cross] [--keep-builder]
   bazel run //path:NAME.update        -- <host-or-ip> [--user root]   # detect board + committed profile, then deploy
   bazel run //path:NAME.ssh           -- [host-or-ip] [--hostname <name>] [--user root] [-- <ssh args>]
+  bazel run //path:NAME.seed_wifi     -- [host-or-ip] [--wifi-file <networks.yaml>] [--list] [--remove <ssid>]
   bazel run //path:NAME.keys          -- {init|ensure|rotate|path|pub}
 
 On aarch64-darwin (Apple Silicon) an image can't be built natively. By DEFAULT
@@ -852,5 +965,5 @@ own aarch64-linux builder, or --cross to cross-compile locally (no builder, but
 rebuilds from source; best on x86_64-linux). See the README.
 EOF
     exit 2 ;;
-  *) die "unknown subcommand '$SUBCMD' (expected image|deploy|update|ssh|keys|builder|cache)" ;;
+  *) die "unknown subcommand '$SUBCMD' (expected image|deploy|update|ssh|seed-wifi|keys|builder|cache)" ;;
 esac
