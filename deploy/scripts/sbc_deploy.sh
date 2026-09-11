@@ -671,21 +671,36 @@ cmd_deploy() {
   fi
 
   # Hardware guard. The closure we're about to build/install targets board
-  # $SBC_BOARD (baked by the sbc_application target / --board), but the kernel,
-  # firmware and device tree are board-SPECIFIC: installing a Pi 5 closure onto a
-  # Pi 3 (or vice versa) writes an incompatible kernel and BRICKS THE NEXT BOOT.
-  # `update` avoids this by choosing the board FROM the hardware; deploy_live is
-  # the low-level primitive where the operator picks the target, so it's the path
-  # that can mismatch — verify the target's real board here and REFUSE a mismatch
-  # (reads the same /proc/device-tree/model `update` does). This runs BEFORE the
-  # closure build so a mismatch fails fast. Escape hatch for a deliberate
+  # $SBC_BOARD / family $SBC_BOARD_FAMILY (baked by the sbc_application target),
+  # and on the Pi the kernel, firmware and device tree are board-SPECIFIC:
+  # installing a Pi 5 closure onto a Pi 3 (or an x86 closure onto either) writes
+  # an incompatible kernel and BRICKS THE NEXT BOOT. `update` avoids this by
+  # choosing the board FROM the hardware; deploy_live is the low-level primitive
+  # where the operator picks the target, so it's the path that can mismatch —
+  # identify the target here (remote_hw_probe) and REFUSE a mismatch. Runs BEFORE
+  # the closure build so a mismatch fails fast. Escape hatch for a deliberate
   # cross-board write (e.g. recovery): SBC_SKIP_BOARD_CHECK=1.
+  #
+  # Granularity differs by family, because the risk does:
+  #   * raspberrypi — verify the exact board. Each one needs its own kernel and
+  #     DTB, so Pi5-closure-onto-Pi3 is the brick case.
+  #   * x86_64 — verify only the FAMILY. Every x86 target is stock nixpkgs +
+  #     systemd-boot with no board-specific boot components, so there is nothing
+  #     below the family to get wrong, and (see dmi_is_placeholder) the SMBIOS
+  #     fields that would name the machine are routinely unprogrammed anyway.
   if [[ -n "${SBC_BOARD:-}" && "${SBC_SKIP_BOARD_CHECK:-0}" != 1 ]]; then
-    local hw_model hw_board
-    # shellcheck disable=SC2086
-    hw_model="$(ssh $ssh_opts "$target" 'cat /proc/device-tree/model 2>/dev/null | tr -d "\0"' || true)"
-    if [[ -z "$hw_model" ]]; then
-      echo "==> WARN: could not read /proc/device-tree/model from $DEPLOY_HOST; cannot verify it is a '$SBC_BOARD' — proceeding (set SBC_SKIP_BOARD_CHECK=1 to silence)." >&2
+    local want_family hw_family hw_model hw_board hw_name
+    want_family="${SBC_BOARD_FAMILY:-raspberrypi}"
+    remote_hw_probe "$target" "$ssh_opts"   # sets HW_FAMILY / HW_MODEL
+    hw_family="$HW_FAMILY"; hw_model="$HW_MODEL"
+
+    if [[ -z "$hw_family" ]]; then
+      echo "==> WARN: could not identify the hardware at $DEPLOY_HOST (no device-tree model, no DMI); cannot verify it is a '$SBC_BOARD' — proceeding (set SBC_SKIP_BOARD_CHECK=1 to silence)." >&2
+    elif [[ "$hw_family" != "$want_family" ]]; then
+      die "HARDWARE MISMATCH: $DEPLOY_HOST is $hw_family hardware, but this closure targets the '$want_family' family (board '$SBC_BOARD'). Installing it would write a kernel/bootloader the hardware cannot boot. Deploy the matching target, or force with SBC_SKIP_BOARD_CHECK=1."
+    elif [[ "$want_family" == "x86_64" ]]; then
+      hw_name="$(dmi_display_name "$hw_model")"
+      echo "==> Board check: $DEPLOY_HOST is x86_64 (${hw_name:-no model name in SMBIOS}) — matches SBC_BOARD=$SBC_BOARD."
     else
       hw_board="$(board_from_model "$hw_model")"
       if [[ -z "$hw_board" ]]; then
@@ -725,6 +740,73 @@ cmd_deploy() {
   echo "==> Switch complete on $DEPLOY_HOST."
 }
 
+# ---------------------------------------------------------------------------
+# Hardware identification. Two families, two mutually exclusive identity sources
+# — which is exactly what makes the family verdict trustworthy:
+#
+#   * raspberrypi — a device-tree platform. /proc/device-tree is populated from
+#     the DTB the firmware handed the kernel, and its `model` node names the
+#     board ("Raspberry Pi 5 Model B Rev 1.1"). No SMBIOS: /sys/class/dmi does
+#     not exist on a Pi at all.
+#   * x86_64 — boots UEFI/ACPI with no DTB, so nothing populates the device
+#     tree and identity lives in SMBIOS under /sys/class/dmi/id instead.
+#
+# NB: on x86, /proc/device-tree may still EXIST as a symlink to an EMPTY
+# /sys/firmware/devicetree/base (it does on amd-rig — the kernel builds in
+# CONFIG_OF), so the presence of the path proves nothing. Only a readable
+# `model` node inside it does; that is what this probes.
+# ---------------------------------------------------------------------------
+
+# Probe the target's platform over ssh in one round trip, setting HW_FAMILY
+# ("raspberrypi" | "x86_64" | "" when neither source answers) and HW_MODEL (the
+# device-tree model string for a Pi; "vendor|product" from DMI for x86).
+HW_FAMILY=""
+HW_MODEL=""
+remote_hw_probe() {
+  local target="$1" ssh_opts="$2" out
+  HW_FAMILY=""; HW_MODEL=""
+  # shellcheck disable=SC2086
+  out="$(ssh $ssh_opts "$target" '
+    m=$(cat /proc/device-tree/model 2>/dev/null | tr -d "\0")
+    if [ -n "$m" ]; then
+      printf "family=raspberrypi\nmodel=%s\n" "$m"
+    elif [ -d /sys/class/dmi/id ]; then
+      printf "family=x86_64\nmodel=%s|%s\n" \
+        "$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null)" \
+        "$(cat /sys/class/dmi/id/product_name 2>/dev/null)"
+    else
+      printf "family=\nmodel=\n"
+    fi
+  ' 2>/dev/null || true)"
+  HW_FAMILY="$(printf '%s\n' "$out" | sed -n 's/^family=//p' | head -n1)"
+  HW_MODEL="$(printf '%s\n' "$out" | sed -n 's/^model=//p' | head -n1)"
+}
+
+# Is this DMI field a factory placeholder rather than a real name? Mini-PC OEMs
+# routinely ship boards with the SMBIOS identity fields unprogrammed — amd-rig
+# reports "Default string" for sys_vendor, product_name, board_name and the rest.
+# Such values name nothing (countless boxes share them), so they must be treated
+# as ABSENT; printing one would read like an identity the machine doesn't have.
+dmi_is_placeholder() {
+  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+    ""|"default string"|"to be filled by o.e.m."|"system product name"|\
+    "system manufacturer"|"not specified"|"not applicable"|"none"|\
+    "unknown"|"n/a"|"oem"|"o.e.m."|"chassis manufacturer") return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Render the "vendor|product" pair from remote_hw_probe as a human-readable name,
+# dropping placeholder halves. Empty when SMBIOS carries no real identity.
+dmi_display_name() {
+  local vendor="${1%%|*}" product="${1#*|}" out=""
+  dmi_is_placeholder "$vendor" || out="$vendor"
+  if ! dmi_is_placeholder "$product"; then
+    [[ -n "$out" ]] && out="$out $product" || out="$product"
+  fi
+  printf '%s' "$out"
+}
+
 # Map a Raspberry Pi device-tree model string to the sbc-deploy board name. This
 # is how `update` picks the board FROM THE HARDWARE, so the right kernel/firmware
 # closure is chosen structurally — you can't deploy a Pi 5 closure onto a Pi 3.
@@ -743,8 +825,9 @@ board_from_model() {
 # update — the "just make this board current" deploy. Unlike deploy_live (a
 # low-level primitive where the operator picks board/caps), update reads WHAT THE
 # BOARD IS and WHAT IT WAS COMMISSIONED AS, and deploys the matching closure:
-#   * board platform  -> detected from /proc/device-tree/model (hardware is
-#     authoritative; can't pick a Pi5 kernel for a Pi3),
+#   * board platform  -> detected from the hardware (remote_hw_probe: the
+#     device-tree model on a Pi, SMBIOS/DMI on x86; hardware is authoritative,
+#     so you can't pick a Pi5 kernel for a Pi3),
 #   * capabilities     -> read from the persisted /var/lib/sbc/profile (KEY=VALUE
 #     SBC_* lines committed at provisioning), with a hybrid detect-warn: if the
 #     consumer supplies SBC_DETECT_CMD, update probes the hardware and warns when
@@ -766,14 +849,23 @@ cmd_update() {
   # 1. Board FROM HARDWARE (unless the operator pinned SBC_BOARD explicitly). The
   #    launcher pre-set SBC_BOARD from the target's default board; detection wins.
   if [[ -z "${SBC_BOARD_PINNED:-}" ]]; then
-    local model detected
-    # shellcheck disable=SC2086
-    model="$(ssh $ssh_opts "$target" 'cat /proc/device-tree/model 2>/dev/null | tr -d "\0"' || true)"
-    [[ -n "$model" ]] || die "could not read /proc/device-tree/model from $DEPLOY_HOST."
-    detected="$(board_from_model "$model")"
-    [[ -n "$detected" ]] || die "unrecognized board model '$model'; add it to board_from_model()."
-    echo "==> Board (detected): $model -> SBC_BOARD=$detected"
-    export SBC_BOARD="$detected"
+    local detected hw_name
+    remote_hw_probe "$target" "$ssh_opts"   # sets HW_FAMILY / HW_MODEL
+    [[ -n "$HW_FAMILY" ]] || die "could not identify the hardware at $DEPLOY_HOST (no readable /proc/device-tree/model, no /sys/class/dmi/id)."
+    if [[ "$HW_FAMILY" == "x86_64" ]]; then
+      # One board serves the whole x86_64 family (stock nixpkgs + systemd-boot,
+      # no board-specific kernel/firmware/DTB), so there is nothing to detect
+      # BELOW the family: keep the board the launcher baked from the target and
+      # just report what the box says it is. cmd_deploy's guard still enforces
+      # that this really is an x86_64 machine.
+      hw_name="$(dmi_display_name "$HW_MODEL")"
+      echo "==> Board (detected): x86_64 (${hw_name:-no model name in SMBIOS}) -> SBC_BOARD=${SBC_BOARD:-<unset>} (one board serves the family)"
+    else
+      detected="$(board_from_model "$HW_MODEL")"
+      [[ -n "$detected" ]] || die "unrecognized board model '$HW_MODEL'; add it to board_from_model()."
+      echo "==> Board (detected): $HW_MODEL -> SBC_BOARD=$detected"
+      export SBC_BOARD="$detected"
+    fi
   else
     echo "==> Board (pinned by operator): SBC_BOARD=$SBC_BOARD"
   fi
