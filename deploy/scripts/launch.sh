@@ -94,19 +94,43 @@ if [[ "$staged_flake_rlocationpath" != "-" ]]; then
   export SBC_FLAKE_DIR
 fi
 
+# Fully resolve a path's symlinks to its physical location, bash-3.2 + macOS safe
+# (no `readlink -f`). Needed so a build_data entry that's a Nix package (its
+# runfiles entry symlinks through to /nix/store/...) lands in the manifest as its
+# real store path, which mkSbcProject then brings in via `builtins.storePath`
+# (closure preserved) instead of `builtins.path` (a plain copy that would drop the
+# package's python/pack/libusb deps). Plain Bazel files resolve to their bazel-out
+# path and keep the copy behaviour.
+resolve_physical() {
+  _rp_p="$1"
+  while [ -L "$_rp_p" ]; do
+    _rp_t="$(readlink "$_rp_p")"
+    case "$_rp_t" in
+      /*) _rp_p="$_rp_t" ;;
+      *)  _rp_p="$(dirname "$_rp_p")/$_rp_t" ;;
+    esac
+  done
+  printf '%s/%s\n' "$(cd "$(dirname "$_rp_p")" && pwd -P)" "$(basename "$_rp_p")"
+}
+
 # Generic build_data: the next $build_data_count args are runfiles paths of
-# arbitrary Bazel-built files. Resolve each to an absolute path and export a
-# SBC_BUILD_DATA manifest ("basename=abs;basename=abs") for mkSbcProject to parse
-# under --impure into `sbcBuildData`. Passed via args (not env) so it survives
-# `bazel run`, like the other lead-resolved inputs above.
+# arbitrary Bazel-built files. Resolve each to an absolute (symlink-free) path and
+# export a SBC_BUILD_DATA manifest ("basename=abs;basename=abs") for mkSbcProject
+# to parse under --impure into `sbcBuildData`. Passed via args (not env) so it
+# survives `bazel run`, like the other lead-resolved inputs above.
 build_data_manifest=""
 while [ "${build_data_count:-0}" -gt 0 ]; do
   bd_rp="$1"; shift
   bd_abs="$(rlocation "$bd_rp")" || {
     echo >&2 "ERROR: could not resolve build_data ($bd_rp) in runfiles"; exit 1; }
+  # KEY = the declared runfiles basename (a static_musl_binary etc. exposes a
+  # RENAMED symlink, e.g. `lamp-host` -> the real `host` binary), so take the name
+  # BEFORE resolving symlinks. VALUE = the physical path (resolve symlinks) so a
+  # nix_pkg entry lands as its real /nix/store path for the storePath seam.
   bd_name="${bd_abs##*/}"
+  bd_val="$(resolve_physical "$bd_abs")"
   if [ -n "$build_data_manifest" ]; then build_data_manifest="$build_data_manifest;"; fi
-  build_data_manifest="$build_data_manifest$bd_name=$bd_abs"
+  build_data_manifest="$build_data_manifest$bd_name=$bd_val"
   build_data_count=$((build_data_count - 1))
 done
 if [ -n "$build_data_manifest" ]; then export SBC_BUILD_DATA="$build_data_manifest"; fi

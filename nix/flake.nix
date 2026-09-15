@@ -143,7 +143,26 @@
           # the sbc_application `build_data` attr). Parse it (getEnv, --impure)
           # into an attrset keyed by basename and pass it to every appModule via
           # specialArgs as `sbcBuildData`. Empty {} in pure eval / when unset.
+          #
+          # A value already under /nix/store (a Nix package exposed to Bazel via a
+          # nix_pkg repo — the launcher resolves its symlink to the real store path)
+          # is brought in with `builtins.storePath`, so its WHOLE closure (e.g.
+          # pyOCD's python + CMSIS pack + libusb) is included in the image. The
+          # value points at the same subpath, but rooted at the storePath so the
+          # closure is retained. Plain Bazel outputs (a bare file) are copied with
+          # `builtins.path` as before.
           envBuildData = builtins.getEnv "SBC_BUILD_DATA";
+          mkBuildDataValue = key: val:
+            let m = builtins.match "(/nix/store/[^/]+)(/.*)?" val;
+            in
+            if m == null
+            then builtins.path { path = /. + val; name = key; }
+            else
+              let
+                root = builtins.storePath (builtins.elemAt m 0);
+                sub = builtins.elemAt m 1;
+              in
+              if sub == null then root else root + sub;
           sbcBuildData =
             if envBuildData == "" then { }
             else builtins.listToAttrs (map
@@ -153,7 +172,7 @@
                   key = builtins.head eq;
                   val = builtins.concatStringsSep "=" (builtins.tail eq);
                 in
-                { name = key; value = builtins.path { path = /. + val; name = key; }; })
+                { name = key; value = mkBuildDataValue key val; })
               (nixpkgs.lib.filter (e: e != "")
                 (nixpkgs.lib.splitString ";" envBuildData)));
 
