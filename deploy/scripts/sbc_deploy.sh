@@ -212,7 +212,7 @@ start_managed_builder() {
   runb="$(grep -oE '/nix/store/[a-z0-9]+-run-builder/bin/run-builder' "$installer/bin/create-builder" | head -n1)"
   [[ -n "$runb" ]] || return 1
   echo "==> Starting auto-managed linux-builder VM (will stop when done; --keep-builder to keep)…" >&2
-  local log; log="$(repo_root)/.sbc-build/builder.log"; mkdir -p "$(dirname "$log")"
+  local log; log="$(sbc_build_dir)/builder.log"; mkdir -p "$(dirname "$log")"
   mkdir -p "$(dirname "$BUILDER_DISK")"
   # KEYS: our key the VM authorizes; NIX_DISK_IMAGE: stable persistent disk (not
   # ./nixos.qcow2 in the CWD). run-nixos-vm cd's to a tmpdir for everything else.
@@ -286,7 +286,7 @@ ensure_managed_builder() {
   if wait_builder_ready 90; then
     _set_managed_builder_args
   else
-    echo "ERROR: builder VM booted but SSH with the sbc-deploy key never became ready (see .sbc-build/builder.log)." >&2
+    echo "ERROR: builder VM booted but SSH with the sbc-deploy key never became ready (see $(sbc_build_dir)/builder.log)." >&2
   fi
 }
 
@@ -332,6 +332,15 @@ repo_root() {
     # Direct invocation (not via `bazel run`): assume CWD is the repo root.
     pwd
   fi
+}
+
+# Out-of-workspace scratch + nix GC-root dir. Must NOT live under repo_root(): a
+# dot-dir in the consumer's source tree pollutes it and trips up tools that scan
+# the workspace (e.g. Bazel globs it and errors). GC roots also have to PERSIST
+# (Determinate GCs aggressively; a reaped root forces a full rebuild), so this is
+# the cache dir, not a temp dir. Override with $SBC_BUILD_DIR.
+sbc_build_dir() {
+  echo "${SBC_BUILD_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/sbc-deploy/build}"
 }
 
 # --- argument parsing (recognized flags consumed, rest passed to nix) -------
@@ -390,7 +399,7 @@ secrets_dir() {
 # rebuilds nothing and doesn't touch the builder at all. Name is per project+attr
 # so distinct targets (image_sd vs image_sd_base) don't clobber each other.
 gc_root_link() {
-  local dir; dir="$(repo_root)/.sbc-build"
+  local dir; dir="$(sbc_build_dir)"
   mkdir -p "$dir"
   echo "$dir/${PROJECT}.$(printf '%s' "$1" | tr '/.' '__')"
 }
