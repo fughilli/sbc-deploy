@@ -60,8 +60,14 @@ in
 
     users.users.root.openssh.authorizedKeys.keys = keys;
 
-    # Toolchain the remote nixos-rebuild switch needs when it shells in.
-    environment.systemPackages = with pkgs; [ git rsync ];
+    # Toolchain the remote nixos-rebuild switch needs when it shells in. Under the
+    # lean seam (SBC_LEAN=1, same getEnv-at-eval switch as the other lean cuts),
+    # drop git: a `deploy_live` uses `nixos-rebuild switch --target-host`, which
+    # builds on the operator/builder and `nix copy`s the closure to the board —
+    # the board never rebuilds from a flake, so it needs neither git nor its
+    # ~190 MB python3 subtree. rsync stays (tiny; some copy paths still use it).
+    environment.systemPackages = with pkgs;
+      [ rsync ] ++ lib.optionals (builtins.getEnv "SBC_LEAN" != "1") [ git ];
     nix.settings.trusted-users = [ "root" ];
   };
 }
