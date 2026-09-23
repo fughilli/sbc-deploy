@@ -31,7 +31,14 @@ pv_rlocationpath="$1"; shift          # "-" sentinel when not needed
 board_rlocationpath="$1"; shift       # "-" sentinel when not needed (e.g. builder)
 builder_rlocationpath="$1"; shift     # "-" sentinel when using --framework-subdir
 staged_flake_rlocationpath="$1"; shift # "-" sentinel unless flake_srcs was declared
+attic_cache_arg="$1"; shift            # "-" sentinel unless attic_cache set (post-build push)
+attic_endpoint_arg="$1"; shift         # "-" sentinel unless attic_endpoint set
 build_data_count="$1"; shift          # count of generic build_data files that follow
+
+# Post-build cache push config (literal strings, not runfiles paths): the deploy
+# script pushes a freshly-realised closure to this cache after a successful build.
+if [[ "$attic_cache_arg" != "-" ]]; then export SBC_ATTIC_CACHE="$attic_cache_arg"; fi
+if [[ "$attic_endpoint_arg" != "-" ]]; then export SBC_ATTIC_ENDPOINT="$attic_endpoint_arg"; fi
 
 script="$(rlocation "$script_rlocationpath")" || {
   echo >&2 "ERROR: could not resolve deploy script ($script_rlocationpath) in runfiles"; exit 1; }
