@@ -1,4 +1,9 @@
 # The generic deploy entrypoint, consumed by the sbc_deploy macro (defs.bzl).
+# sh_binary is loaded from rules_shell (a module dep) rather than relied on as a
+# native global, so this builds under Bazel 8+ (which removed the native rule) as
+# well as Bazel 7. defs.bzl already loads it the same way.
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+
 package(default_visibility = ["//visibility:public"])
 
 exports_files([
