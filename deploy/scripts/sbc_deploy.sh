@@ -7,7 +7,9 @@
 # via the sh_binary `args`, and the operator appends the rest after `--`:
 #
 #   bazel run //path:NAME.image_sd    -- [--device /dev/sdX] [--no-write] [--hostname <name>] [nix args]
-#   bazel run //path:NAME.deploy_live -- <host-or-ip> [--hostname <name>] [--user root] [nix args]
+#   bazel run //path:NAME.deploy_live -- <host-or-ip> [--hostname <name>] [--user root] [--tailscale-ssh] [nix args]
+#     (--tailscale-ssh: authenticate by tailnet identity + the tailnet ssh ACL instead
+#      of a baked deploy key; pass the board's MagicDNS name as <host-or-ip>.)
 #   bazel run //path:NAME.keys        -- {init|ensure|rotate|path|pub}
 #
 # --hostname sets the board's IDENTITY (networking.hostName), and is meant to be
@@ -58,6 +60,9 @@ TS_AUTHKEY_FILE="${SBC_TAILSCALE_AUTHKEY_FILE:-}"
 DEVICE=""
 WRITE=1
 DEPLOY_USER="root"
+# deploy_live over Tailscale SSH: authenticate by tailnet identity + ACL instead of a
+# baked deploy key. No key generated/required, and ssh/nix-copy drop `-i <key>`.
+TAILSCALE_SSH="${SBC_TAILSCALE_SSH:-0}"
 DEPLOY_HOST=""
 # Remote/VM aarch64-linux build machine(s). On aarch64-darwin (Apple Silicon)
 # the host can't build the Linux image locally, so builds must be dispatched to
@@ -422,10 +427,11 @@ parse_common_flags() {
       --cross)           CROSS=1; shift ;;
       --lean)            LEAN=1; shift ;;
       --keep-builder)    KEEP_BUILDER=1; shift ;;
+      --tailscale-ssh)   TAILSCALE_SSH=1; shift ;;  # deploy_live: auth via tailnet identity, no deploy key
       --)                # everything after `--` is forwarded verbatim to nix
                          shift
                          while [[ $# -gt 0 ]]; do EXTRA_ARGS+=("$1"); shift; done ;;
-      -*)                die "unrecognized option '$a'. Recognized: --device <dev>, --no-write, --hostname <name>, --user <name>, --builder <spec>, --cross, --lean, --keep-builder. To pass flags to nix, put them after a literal '--' (e.g. '-- -- --dry-run')." ;;
+      -*)                die "unrecognized option '$a'. Recognized: --device <dev>, --no-write, --hostname <name>, --user <name>, --builder <spec>, --cross, --lean, --keep-builder, --tailscale-ssh. To pass flags to nix, put them after a literal '--' (e.g. '-- -- --dry-run')." ;;
       *)                 POSITIONAL+=("$a"); shift ;;
     esac
   done
@@ -637,13 +643,24 @@ cmd_deploy() {
   # that's $SBC_HOSTNAME_OVERRIDE from --hostname, applied above for all modes.
   attr="${NIXOS_ATTR:-$PROJECT}"
   key_paths
-  [[ -f "$PRIV" ]] || die "deploy private key not found at $PRIV. Generate it (and image/deploy the board to trust it) with the .keys target: keys init"
-  chmod 600 "$PRIV" 2>/dev/null || true
-
   target="${DEPLOY_USER}@${DEPLOY_HOST}"
-  local ssh_opts="-i $PRIV -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+  local ssh_opts
+  if [[ "$TAILSCALE_SSH" == 1 ]]; then
+    # Tailscale SSH: tailscaled on both ends authenticates by tailnet identity + the
+    # tailnet's ssh ACL (grant <you> -> tag on the board). No deploy key needed, so we
+    # don't require $PRIV and don't pass `-i`. Pass the deploy pubkey through only if
+    # one happens to exist, so a fallback key stays trusted; otherwise the board relies
+    # solely on Tailscale SSH. DEPLOY_HOST should be the board's MagicDNS name.
+    echo "==> Deploying over Tailscale SSH (no deploy key; tailnet identity authenticates)."
+    ssh_opts="-o StrictHostKeyChecking=accept-new"
+    [[ -f "$PUB" ]] && export SBC_DEPLOY_PUBKEY_FILE="$PUB"
+  else
+    [[ -f "$PRIV" ]] || die "deploy private key not found at $PRIV. Generate it (and image/deploy the board to trust it) with the .keys target: keys init. (Or use --tailscale-ssh to authenticate by tailnet identity instead.)"
+    chmod 600 "$PRIV" 2>/dev/null || true
+    ssh_opts="-i $PRIV -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+    export SBC_DEPLOY_PUBKEY_FILE="$PUB"   # baked into the config at eval (--impure)
+  fi
   export NIX_SSHOPTS="$ssh_opts"          # used by `nix copy` over ssh-ng
-  export SBC_DEPLOY_PUBKEY_FILE="$PUB"     # baked into the config at eval (--impure)
 
   # Identity is device-resident and immutable. The board's hostname is committed
   # once at commissioning (identity.nix writes it write-once to
