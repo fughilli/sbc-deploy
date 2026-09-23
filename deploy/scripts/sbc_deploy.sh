@@ -294,7 +294,7 @@ _set_managed_builder_args() {
 ensure_managed_builder() {
   [[ "$(uname -s)" == "Darwin" ]] || return 0
   ensure_builder_key
-  trap stop_managed_builder EXIT   # no-op unless we start one below
+  trap _sbc_on_exit EXIT   # stop builder (no-op unless started) + clean secret temp
   if builder_port_open; then
     # Something's already listening. Give it a short window to accept our key
     # (it might be one we left running); otherwise defer to global config.
@@ -488,10 +488,44 @@ gc_root_link() {
 # ---------------------------------------------------------------------------
 # keys — deploy SSH key management (ed25519 pair).
 # ---------------------------------------------------------------------------
+# Transient store for secrets fetched on demand from a client secret_tool: a 0600
+# dir, shredded + removed on exit, so a fetched deploy key never persists on disk.
+_secret_tmpdir_init() {
+  [[ -n "${SECRET_TMPDIR:-}" ]] && return 0
+  SECRET_TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/sbc-secret.XXXXXX")" || die "could not create a temp dir for fetched secrets"
+  chmod 700 "$SECRET_TMPDIR"
+  trap _sbc_on_exit EXIT
+}
+_secret_tmpdir_cleanup() {
+  [[ -n "${SECRET_TMPDIR:-}" && -d "$SECRET_TMPDIR" ]] || return 0
+  find "$SECRET_TMPDIR" -type f -exec sh -c 'command -v shred >/dev/null 2>&1 && shred -u "$@" 2>/dev/null || rm -f "$@"' _ {} + 2>/dev/null || true
+  rm -rf "$SECRET_TMPDIR" 2>/dev/null || true
+  SECRET_TMPDIR=""
+}
+# One EXIT handler for both the managed builder and any fetched-secret temp dir, so
+# neither trap clobbers the other (bash keeps only the last-set EXIT trap).
+_sbc_on_exit() { stop_managed_builder; _secret_tmpdir_cleanup; }
+
 key_paths() {
   SECRETS="$(secrets_dir)"
   PRIV="$SECRETS/deploy_key"
   PUB="$SECRETS/deploy_key.pub"
+  # If a client secret tool is bound and no local deploy key exists, fetch it on
+  # demand into the transient dir (never persisted in secrets/). The rest of the
+  # script uses $PRIV/$PUB unchanged; only their location differs. The public half
+  # (baked into the image via SBC_DEPLOY_PUBKEY_FILE) is derived, not fetched.
+  if [[ -n "${SBC_SECRET_TOOL:-}" && ! -f "$PRIV" ]]; then
+    _secret_tmpdir_init
+    PRIV="$SECRET_TMPDIR/deploy_key"
+    PUB="$SECRET_TMPDIR/deploy_key.pub"
+    if [[ ! -f "$PRIV" ]]; then
+      ( umask 077; "$SBC_SECRET_TOOL" deploy-key > "$PRIV" ) \
+        || die "secret tool ($SBC_SECRET_TOOL) failed to provide 'deploy-key'"
+      chmod 600 "$PRIV"
+      ssh-keygen -y -f "$PRIV" > "$PUB" 2>/dev/null \
+        || die "could not derive the public key from the fetched deploy-key"
+    fi
+  fi
 }
 
 keys_init() {
@@ -1005,8 +1039,19 @@ cmd_seed_tailscale() {
   else
     akf="$SECRETS/tailscale-authkey"
   fi
-  [[ -f "$akf" ]] || die "tailscale auth key file not found at $akf. Put a reusable or ephemeral auth key there (https://login.tailscale.com/admin/settings/keys), or pass --authkey-file <path>. It stays out of git/the store (secrets/ is gitignored)."
-  local authkey; authkey="$(tr -d '[:space:]' < "$akf")"
+  local authkey authkey_src
+  if [[ ! -f "$akf" && -z "$TS_AUTHKEY_FILE" && -n "${SBC_SECRET_TOOL:-}" ]]; then
+    # No file present but a client secret tool is bound: fetch the auth key from it,
+    # in memory only (never written to disk).
+    authkey="$("$SBC_SECRET_TOOL" tailscale-authkey | tr -d '[:space:]')" \
+      || die "secret tool ($SBC_SECRET_TOOL) failed to provide 'tailscale-authkey'"
+    [[ -n "$authkey" ]] || die "secret tool returned an empty tailscale-authkey"
+    authkey_src="secret tool"
+  else
+    [[ -f "$akf" ]] || die "tailscale auth key file not found at $akf. Put a reusable or ephemeral auth key there (https://login.tailscale.com/admin/settings/keys), pass --authkey-file <path>, or bind a secret_tool on the target. It stays out of git/the store (secrets/ is gitignored)."
+    authkey="$(tr -d '[:space:]' < "$akf")"
+    authkey_src="$akf"
+  fi
   [[ -n "$authkey" ]] || die "tailscale auth key file $akf is empty."
 
   local host target
@@ -1024,7 +1069,7 @@ cmd_seed_tailscale() {
   local f
   for f in ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}; do up="$up $(printf %q "$f")"; done
 
-  echo "==> Seeding Tailscale on $target (auth key: $akf)" >&2
+  echo "==> Seeding Tailscale on $target (auth key: $authkey_src)" >&2
   ssh "${ssh_opts[@]}" "$target" "$up" \
     || die "tailscale up failed on $target (is sbcDeploy.tailscale.enable set and deployed to the board with deploy_live?)"
   echo "==> tailscale status:" >&2
