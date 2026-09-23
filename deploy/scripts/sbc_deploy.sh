@@ -325,7 +325,7 @@ needs_realisation() {
   out="$(nix build --dry-run \
     ${FRAMEWORK_ARGS[@]+"${FRAMEWORK_ARGS[@]}"} \
     ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
-    --impure "$ref" 2>&1)" || true
+    --impure --accept-flake-config "$ref" 2>&1)" || true
   [[ "$out" == *"will be built"* ]]
 }
 
@@ -542,7 +542,7 @@ cmd_image() {
     ${FRAMEWORK_ARGS[@]+"${FRAMEWORK_ARGS[@]}"} \
     ${BUILDER_ARGS[@]+"${BUILDER_ARGS[@]}"} \
     ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
-    --impure --out-link "$gclink" --print-out-paths \
+    --impure --accept-flake-config --out-link "$gclink" --print-out-paths \
     "path:${flake_dir}#${IMAGE_ATTR}" | tail -n1)"
   [[ -n "$out" ]] || die "nix build produced no output path."
   # The output is a DIRECTORY (itself named …img.zst); the actual artifact is a
@@ -723,7 +723,7 @@ cmd_deploy() {
     ${FRAMEWORK_ARGS[@]+"${FRAMEWORK_ARGS[@]}"} \
     ${BUILDER_ARGS[@]+"${BUILDER_ARGS[@]}"} \
     ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
-    --impure --out-link "$gclink" --print-out-paths \
+    --impure --accept-flake-config --out-link "$gclink" --print-out-paths \
     "path:${flake_dir}#nixosConfigurations.${attr}.config.system.build.toplevel" | tail -n1)"
   [[ -n "$toplevel" ]] || die "failed to build the system closure."
   echo "==> Built $toplevel"
