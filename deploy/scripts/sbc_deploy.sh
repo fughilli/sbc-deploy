@@ -345,6 +345,27 @@ prepare_backend() {
   fi
 }
 
+# Best-effort push of a realised store path's closure to a binary cache, so future
+# builds/deploys substitute it (from the cache, over the local network) instead of
+# rebuilding or re-uploading from this machine. Opt-in via SBC_ATTIC_CACHE
+# ("<server>:<cache>"); SBC_ATTIC_ENDPOINT enables a self-contained login. Runs even
+# on a fully-cached build (the path is realised locally, no builder) so the cache
+# stays warm; a repeat push of already-present paths is a fast no-op. Never fails the
+# build — this is a "try and push".
+maybe_push_cache() {
+  local path="$1"
+  [[ -n "${SBC_ATTIC_CACHE:-}" && -n "$path" ]] || return 0
+  local attic
+  if command -v attic >/dev/null 2>&1; then attic=(attic); else attic=(nix run nixpkgs#attic-client --); fi
+  if [[ -n "${SBC_ATTIC_ENDPOINT:-}" ]]; then
+    "${attic[@]}" login "${SBC_ATTIC_CACHE%%:*}" "$SBC_ATTIC_ENDPOINT" >/dev/null 2>&1 \
+      || echo "==> attic login failed; skipping cache push." >&2
+  fi
+  echo "==> Pushing $path closure to attic cache '$SBC_ATTIC_CACHE' (best-effort)…" >&2
+  "${attic[@]}" push "$SBC_ATTIC_CACHE" "$path" \
+    || echo "==> attic push failed (continuing; deploy is unaffected)." >&2
+}
+
 # --- resolve paths against the real source tree ----------------------------
 repo_root() {
   if [[ -n "${BUILD_WORKSPACE_DIRECTORY:-}" ]]; then
@@ -545,6 +566,7 @@ cmd_image() {
     --impure --out-link "$gclink" --print-out-paths \
     "path:${flake_dir}#${IMAGE_ATTR}" | tail -n1)"
   [[ -n "$out" ]] || die "nix build produced no output path."
+  maybe_push_cache "$out"
   # The output is a DIRECTORY (itself named …img.zst); the actual artifact is a
   # file inside it — an SD image (sd-image/*.img.zst) for the Raspberry Pi family,
   # or a bootable install USB (iso/*.iso) for the amd64 family. Restrict to
@@ -727,6 +749,7 @@ cmd_deploy() {
     "path:${flake_dir}#nixosConfigurations.${attr}.config.system.build.toplevel" | tail -n1)"
   [[ -n "$toplevel" ]] || die "failed to build the system closure."
   echo "==> Built $toplevel"
+  maybe_push_cache "$toplevel"
 
   # 2. Copy the closure to the board (root is a trusted user there).
   echo "==> Copying closure to $target"

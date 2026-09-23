@@ -168,6 +168,8 @@ def sbc_application(
         build_data = None,
         flake_srcs = None,
         detect_caps_cmd = None,
+        attic_cache = None,
+        attic_endpoint = None,
         visibility = None):
     """Create the three deploy-mode targets (+ keys) for one SBC application.
 
@@ -229,6 +231,11 @@ def sbc_application(
         target to report the capabilities the hardware physically has, as SBC_*
         KEY=VALUE lines (e.g. `lsusb | grep -q 0925:3881 && echo SBC_ANALYZER=1`).
         `.update` warns when this disagrees with the board's committed profile.
+      attic_cache: optional attic cache ref ("<server>:<cache>") to push a freshly
+        realised closure to after a successful build (best-effort; never fails the
+        build). Skipped for fully-cached runs only if the closure is already there.
+      attic_endpoint: optional attic endpoint URL; when set, the deploy does a
+        self-contained `attic login <server> <endpoint>` before pushing.
       visibility: visibility for the generated targets.
     """
     project = project or name
@@ -297,6 +304,8 @@ def sbc_application(
         "$(rlocationpath {})".format(board),
         "$(rlocationpath {})".format(_BUILDER),
         staged_flake_lead,
+        attic_cache or "-",
+        attic_endpoint or "-",
         str(len(build_data)),
     ] + build_data_leads
 
@@ -374,6 +383,8 @@ def _tool_target(name, subcommand, framework, visibility):
             "-",  # no board definition
             "-",  # no builder flake (this target uses --framework-subdir)
             "-",  # no staged flake source (uses --framework-subdir)
+            "-",  # no attic cache (tool targets don't push)
+            "-",  # no attic endpoint
             "0",  # no build_data
             subcommand,
             "--framework-subdir",
