@@ -730,7 +730,11 @@ cmd_deploy() {
 
   # 2. Copy the closure to the board (root is a trusted user there).
   echo "==> Copying closure to $target"
-  nix copy --no-check-sigs --to "ssh-ng://${target}" "$toplevel"
+  # --substitute-on-destination lets a board that has its own binary-cache
+  # substituters (baked into its nix.settings) pull the closure from them instead of
+  # receiving every path over this machine's uplink — only the paths no cache has are
+  # sent. No-op when the board has no extra substituters.
+  nix copy --no-check-sigs --substitute-on-destination --to "ssh-ng://${target}" "$toplevel"
 
   # 3. Register it as the current system generation and activate it.
   echo "==> Activating on $target (switch-to-configuration switch)"
