@@ -170,6 +170,7 @@ def sbc_application(
         detect_caps_cmd = None,
         attic_cache = None,
         attic_endpoint = None,
+        secret_tool = None,
         visibility = None):
     """Create the three deploy-mode targets (+ keys) for one SBC application.
 
@@ -236,6 +237,14 @@ def sbc_application(
         build). Skipped for fully-cached runs only if the closure is already there.
       attic_endpoint: optional attic endpoint URL; when set, the deploy does a
         self-contained `attic login <server> <endpoint>` before pushing.
+      secret_tool: optional label to an executable providing secrets on demand, with
+        a stable CLI: `<tool> <name>` writes the secret bytes to stdout (nonzero exit
+        on failure). When set, the deploy fetches the deploy key (name `deploy-key`)
+        and the tailscale auth key (name `tailscale-authkey`) from it — into a
+        transient, shredded-on-exit file (deploy key) or memory (auth key) — instead
+        of persistent secrets/ files, so a bench can be provisioned with no
+        pre-distributed key material. The public half is derived from the fetched
+        deploy key, not requested separately.
       visibility: visibility for the generated targets.
     """
     project = project or name
@@ -274,6 +283,10 @@ def sbc_application(
     build_data = build_data or []
     build_data_leads = ["$(rlocationpath {})".format(f) for f in build_data]
 
+    # A client-provided secret tool (label to an executable) resolved to a runfiles
+    # path; the launcher re-resolves it to $SBC_SECRET_TOOL. "-" sentinel when unset.
+    secret_tool_lead = "$(rlocationpath {})".format(secret_tool) if secret_tool else "-"
+
     # Hermetic flake source: stage the declared srcs into a TreeArtifact and point
     # the nix build at THAT (via $SBC_FLAKE_DIR), never the mutable workspace. "-"
     # sentinel keeps the legacy workspace-path behaviour when flake_srcs is unset.
@@ -306,13 +319,14 @@ def sbc_application(
         staged_flake_lead,
         attic_cache or "-",
         attic_endpoint or "-",
+        secret_tool_lead,
         str(len(build_data)),
     ] + build_data_leads
 
     # _BUILDER (flake.nix) must be listed directly so its $(rlocationpath) in
     # `lead` has a declared prerequisite; _BUILDER_SRCS carries flake.lock into
     # runfiles beside it so the realised path: flake evaluates purely.
-    data = [_SCRIPT, _BASH, _ZSTD, _PV, _RUNFILES, board, _BUILDER, _BUILDER_SRCS] + wifi_data + build_data + staged_data
+    data = [_SCRIPT, _BASH, _ZSTD, _PV, _RUNFILES, board, _BUILDER, _BUILDER_SRCS] + wifi_data + build_data + staged_data + ([secret_tool] if secret_tool else [])
 
     def _target(suffix, argv):
         sh_binary(
@@ -385,6 +399,7 @@ def _tool_target(name, subcommand, framework, visibility):
             "-",  # no staged flake source (uses --framework-subdir)
             "-",  # no attic cache (tool targets don't push)
             "-",  # no attic endpoint
+            "-",  # no secret tool
             "0",  # no build_data
             subcommand,
             "--framework-subdir",
