@@ -357,16 +357,48 @@ prepare_backend() {
 # on a fully-cached build (the path is realised locally, no builder) so the cache
 # stays warm; a repeat push of already-present paths is a fast no-op. Never fails the
 # build — this is a "try and push".
+#
+# By default the push runs in the BACKGROUND, detached from this script: a big
+# closure (a multi-GB installer ISO over a slow uplink) can take tens of minutes, and
+# nothing after the build needs it — the image write / closure copy only read the
+# already-realised local store path (gc-rooted, so it can't be collected mid-push).
+# It keeps going after this script exits and ignores SIGINT/SIGHUP, so a Ctrl-C at
+# the flash prompt or closing the terminal doesn't abort it. Output goes to
+# .sbc-build/attic-push-<project>.log. SBC_ATTIC_PUSH selects the mode:
+#   background (default) | foreground (block until done, output inline) | off
 maybe_push_cache() {
   local path="$1"
   [[ -n "${SBC_ATTIC_CACHE:-}" && -n "$path" ]] || return 0
-  local attic
+  local mode="${SBC_ATTIC_PUSH:-background}"
+  case "$mode" in
+    off) echo "==> SBC_ATTIC_PUSH=off; not pushing to attic cache '$SBC_ATTIC_CACHE'." >&2; return 0 ;;
+    foreground|background) ;;
+    *) echo "==> Unknown SBC_ATTIC_PUSH='$mode' (background|foreground|off); using background." >&2; mode=background ;;
+  esac
+  if [[ "$mode" == foreground ]]; then
+    echo "==> Pushing $path closure to attic cache '$SBC_ATTIC_CACHE' (best-effort)…" >&2
+    _attic_push "$path"
+    return 0
+  fi
+  local log; log="$(repo_root)/.sbc-build/attic-push-${PROJECT:-sbc}.log"
+  mkdir -p "$(dirname "$log")"
+  # `trap '' INT HUP` in the subshell is inherited (as SIG_IGN) by attic across exec,
+  # so the terminal's Ctrl-C / hangup — delivered to this whole process group, as a
+  # non-interactive script has no job control — can't take the push down with it.
+  ( trap '' INT HUP; { echo "== $(date '+%F %T') push $path -> $SBC_ATTIC_CACHE"; _attic_push "$path"; echo "== $(date '+%F %T') done"; } >"$log" 2>&1 ) &
+  local pid=$!
+  disown "$pid" 2>/dev/null || true
+  echo "==> Pushing $path closure to attic cache '$SBC_ATTIC_CACHE' in the background (pid $pid; log: $log). SBC_ATTIC_PUSH=foreground to wait for it." >&2
+}
+
+# The login + push itself (shared by both modes). Never fails the caller.
+_attic_push() {
+  local path="$1" attic
   if command -v attic >/dev/null 2>&1; then attic=(attic); else attic=(nix run nixpkgs#attic-client --); fi
   if [[ -n "${SBC_ATTIC_ENDPOINT:-}" ]]; then
     "${attic[@]}" login "${SBC_ATTIC_CACHE%%:*}" "$SBC_ATTIC_ENDPOINT" >/dev/null 2>&1 \
       || echo "==> attic login failed; skipping cache push." >&2
   fi
-  echo "==> Pushing $path closure to attic cache '$SBC_ATTIC_CACHE' (best-effort)…" >&2
   "${attic[@]}" push "$SBC_ATTIC_CACHE" "$path" \
     || echo "==> attic push failed (continuing; deploy is unaffected)." >&2
 }
