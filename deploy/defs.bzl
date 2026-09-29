@@ -235,6 +235,10 @@ def sbc_application(
       attic_cache: optional attic cache ref ("<server>:<cache>") to push a freshly
         realised closure to after a successful build (best-effort; never fails the
         build). Skipped for fully-cached runs only if the closure is already there.
+        The push runs in the background, detached, so the image write / closure copy
+        that follows isn't held up by a slow upload; it survives Ctrl-C and the
+        script exiting, logging to .sbc-build/attic-push-<name>.log. Set
+        SBC_ATTIC_PUSH=foreground to wait for it inline, or =off to skip it.
       attic_endpoint: optional attic endpoint URL; when set, the deploy does a
         self-contained `attic login <server> <endpoint>` before pushing.
       secret_tool: optional label to an executable providing secrets on demand, with
