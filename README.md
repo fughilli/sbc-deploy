@@ -153,6 +153,39 @@ The write runs under `sudo` (you'll be prompted). Double-check the device — th
 overwrites the whole disk. On macOS the first build/flash pulls `zstd` from the
 cache (tiny).
 
+## Rockchip boards (NanoPi R6S)
+
+The **`rockchip`** family targets Rockchip RK3588-class boards with a stock
+nixpkgs kernel and mainline U-Boot (no vendor BSP). The first board is the
+FriendlyElec **NanoPi R6S** (RK3588S, 2x USB 3.0, 3x Ethernet):
+
+```python
+sbc_application(
+    name = "myboard",
+    board = "@sbc_deploy//deploy/boards:nanopi-r6s",   # family = "rockchip"
+    ...
+)
+```
+
+The targets are the same as for a Pi: `image_sd` / `image_sd_base` build a
+microSD image (U-Boot `u-boot-rockchip.bin` written at sector 64, an extlinux
+boot menu, ext4 root), and `deploy_live` / `update` / `ssh` work as usual. The
+boot ROM tries the SD card before the on-board eMMC, so the card boots without
+touching the eMMC; to run from eMMC, boot the SD image once and `dd` it across.
+The board is identified at deploy time from `/proc/device-tree/model`
+("FriendlyElec NanoPi R6S"), and a Pi closure is refused for it (and vice versa).
+
+Notes:
+- The same aarch64-linux builder as the Pi serves it. `--cross` is not wired up
+  for this family.
+- The R6S has no video output, so the console is the debug UART: uart2 at
+  1500000 baud on the 3-pin header.
+- rkbin's DDR init blob is redistributable but unfree; `rockchip.nix` allows
+  exactly that package.
+- Add another RK3588 board by extending `boards` in `nix/modules/rockchip.nix`
+  (U-Boot defconfig, in-tree DTB, console) and adding an `sbc_board` target.
+- Status: the images evaluate; building and booting on hardware is the next step.
+
 ## amd64 mini PCs (x86_64)
 
 Besides the Raspberry Pi, sbc-deploy can target a generic **amd64 mini PC**

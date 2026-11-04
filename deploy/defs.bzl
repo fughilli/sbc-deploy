@@ -184,10 +184,10 @@ def sbc_application(
         nixos-raspberrypi board + optional submodules. Default
         `//deploy/boards:raspberry-pi-5`; predefined targets live in
         `@sbc_deploy//deploy/boards` (incl. `amd64-generic` for an x86_64 mini
-        PC). Flows to `mkSbcSystem` via `$SBC_BOARD` / `$SBC_BOARD_MODULES` /
+        PC and `nanopi-r6s` for the Rockchip RK3588S NanoPi R6S). Flows to `mkSbcSystem` via `$SBC_BOARD` / `$SBC_BOARD_MODULES` /
         `$SBC_BOARD_FAMILY`, so the consumer's flake needn't hardcode a board.
         The family also selects which image targets are meaningful: `image_sd*`
-        for raspberrypi, `image_installer*` for x86_64.
+        for raspberrypi and rockchip, `image_installer*` for x86_64.
       lean: super-lean base image — drop the RPi sd-image rescue toolkit
         (vim/testdisk/ddrescue/…), documentation, and NixOS's default extra
         packages. Right for a headless appliance; leaves coreutils/systemd/your

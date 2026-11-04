@@ -49,3 +49,13 @@ sbc_board(
     nixos_board = "generic-x86",
     family = "x86_64",
 )
+
+# FriendlyElec NanoPi R6S (Rockchip RK3588S, 2x USB 3.0, 3x Ethernet, microSD + eMMC).
+# `family = "rockchip"`: a stock nixpkgs aarch64 system with mainline U-Boot and
+# kernel (nix/modules/rockchip.nix); `image_sd` builds a microSD image with U-Boot
+# at sector 64. The same aarch64-linux builder as the Pi family serves it.
+sbc_board(
+    name = "nanopi-r6s",
+    nixos_board = "nanopi-r6s",
+    family = "rockchip",
+)
