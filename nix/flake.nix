@@ -59,6 +59,7 @@
         wifi = modulesDir + "/wifi.nix";
         tailscale = modulesDir + "/tailscale.nix";
         spi = modulesDir + "/spi.nix";
+        rockchip = modulesDir + "/rockchip.nix";
       };
 
       # Build an SBC NixOS system. `family` selects the platform:
@@ -66,7 +67,10 @@
       #   * "x86_64"                — a stock nixpkgs x86_64-linux system
       #                               (UEFI/systemd-boot); its bootable installer
       #                               USB is built by mkInstallerIso / mkSbcProject.
-      #   family       : "raspberrypi" | "x86_64". Overridden by $SBC_BOARD_FAMILY
+      #   * "rockchip"              — a stock nixpkgs aarch64-linux system with
+      #                               mainline U-Boot + extlinux and an SD image
+      #                               (modules/rockchip.nix); board = "nanopi-r6s".
+      #   family       : "raspberrypi" | "x86_64" | "rockchip". Overridden by $SBC_BOARD_FAMILY
       #                  (the sbc_application `board` attr's family). On x86_64 the
       #                  `board`/`boardModules`/cross RPi seams are unused.
       #   board        : nixos-raspberrypi board, e.g. "raspberry-pi-5" (default),
@@ -290,8 +294,24 @@
           # root/boot filesystems (see x86-target.nix). This module is the x86
           # counterpart to the RPi board + sd-image modules above.
           x86Modules = [ (modulesDir + "/x86-target.nix") ];
+
+          # ---- Rockchip family (mainline U-Boot + kernel) --------------------
+          # Stock nixpkgs aarch64-linux with rockchip.nix supplying the bootloader,
+          # device tree and SD image layout for the named board. The board name is
+          # the Bazel board definition's (nanopi-r6s), not an nixos-raspberrypi one.
+          rockchipModules = [
+            (modulesDir + "/rockchip.nix")
+            { sbcRockchip.board = resolvedBoard; }
+          ];
         in
-        if resolvedFamily == "x86_64"
+        if resolvedFamily == "rockchip"
+        then
+          nixpkgs.lib.nixosSystem {
+            system = "aarch64-linux";
+            inherit specialArgs;
+            modules = rockchipModules ++ commonModules ++ modules;
+          }
+        else if resolvedFamily == "x86_64"
         then
           # amd64 mini PC: no nixos-raspberrypi, no sd-image, no RPi cross module.
           # The bootable installer that carries this system's closure is built by
@@ -347,7 +367,7 @@
       #   appModules    : the application — services.sbcApps + any system deps.
       #   systemModules : base config baked into BOTH images (wifi, hardware…),
       #                   so the base image can reach the network for deploy_live.
-      #   family        : "raspberrypi" (default) or "x86_64"; selects the system
+      #   family        : "raspberrypi" (default), "x86_64" or "rockchip"; selects the system
       #                   builder + which `images.*` are produced. Overridden by
       #                   $SBC_BOARD_FAMILY (the sbc_application `board` attr).
       #   buildPlatform : cross-compile on this platform instead of dispatching to
@@ -396,6 +416,7 @@
                   targetToplevel = base.config.system.build.toplevel;
                 }).config.system.build.isoImage;
             } else {
+              # raspberrypi and rockchip both emit an SD image under the same attrs.
               sdImage = full.config.system.build.sdImage;
               sdImageBase = base.config.system.build.sdImage;
             };

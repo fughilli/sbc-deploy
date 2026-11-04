@@ -787,8 +787,9 @@ cmd_deploy() {
   # cross-board write (e.g. recovery): SBC_SKIP_BOARD_CHECK=1.
   #
   # Granularity differs by family, because the risk does:
-  #   * raspberrypi — verify the exact board. Each one needs its own kernel and
-  #     DTB, so Pi5-closure-onto-Pi3 is the brick case.
+  #   * raspberrypi, rockchip — verify the exact board. Each one needs its own
+  #     kernel and DTB (rockchip: U-Boot extlinux FDT), so Pi5-closure-onto-Pi3
+  #     is the brick case.
   #   * x86_64 — verify only the FAMILY. Every x86 target is stock nixpkgs +
   #     systemd-boot with no board-specific boot components, so there is nothing
   #     below the family to get wrong, and (see dmi_is_placeholder) the SMBIOS
@@ -868,8 +869,9 @@ cmd_deploy() {
 # ---------------------------------------------------------------------------
 
 # Probe the target's platform over ssh in one round trip, setting HW_FAMILY
-# ("raspberrypi" | "x86_64" | "" when neither source answers) and HW_MODEL (the
-# device-tree model string for a Pi; "vendor|product" from DMI for x86).
+# ("raspberrypi" | "rockchip" | "x86_64" | "" when neither source answers) and
+# HW_MODEL (the device-tree model string for a Pi or Rockchip board;
+# "vendor|product" from DMI for x86).
 HW_FAMILY=""
 HW_MODEL=""
 remote_hw_probe() {
@@ -879,7 +881,13 @@ remote_hw_probe() {
   out="$(ssh $ssh_opts "$target" '
     m=$(cat /proc/device-tree/model 2>/dev/null | tr -d "\0")
     if [ -n "$m" ]; then
-      printf "family=raspberrypi\nmodel=%s\n" "$m"
+      # A device-tree machine is a Rockchip board when its root compatible says
+      # so; everything else with a DT model is treated as a Pi, as before.
+      if tr "\0" "\n" < /proc/device-tree/compatible 2>/dev/null | grep -q "^rockchip,"; then
+        printf "family=rockchip\nmodel=%s\n" "$m"
+      else
+        printf "family=raspberrypi\nmodel=%s\n" "$m"
+      fi
     elif [ -d /sys/class/dmi/id ]; then
       printf "family=x86_64\nmodel=%s|%s\n" \
         "$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null)" \
@@ -917,7 +925,7 @@ dmi_display_name() {
   printf '%s' "$out"
 }
 
-# Map a Raspberry Pi device-tree model string to the sbc-deploy board name. This
+# Map a device-tree model string (Raspberry Pi or Rockchip) to the sbc-deploy board name. This
 # is how `update` picks the board FROM THE HARDWARE, so the right kernel/firmware
 # closure is chosen structurally — you can't deploy a Pi 5 closure onto a Pi 3.
 # Extend here as new platforms are supported.
@@ -927,6 +935,7 @@ board_from_model() {
     *"Raspberry Pi 4"*)      echo "raspberry-pi-4" ;;
     *"Raspberry Pi 3"*)      echo "raspberry-pi-3" ;;
     *"Raspberry Pi Zero 2"*) echo "raspberry-pi-02" ;;
+    *"NanoPi R6S"*)          echo "nanopi-r6s" ;;
     *)                       echo "" ;;
   esac
 }

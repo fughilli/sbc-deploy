@@ -3,7 +3,8 @@
 A board definition picks a platform `family` and, for the Raspberry Pi family,
 names a `nixos-raspberrypi` board (which selects the right closure components —
 kernel, firmware, device tree, bootloader) plus the optional board submodules to
-import (e.g. `display-vc4`). It's a first-class Bazel target carrying
+import (e.g. `display-vc4`). The `rockchip` family instead names a board of
+`nix/modules/rockchip.nix` (mainline U-Boot + kernel, e.g. `nanopi-r6s`). It's a first-class Bazel target carrying
 `SbcBoardInfo`, fed to the `board = ` attribute of `sbc_application()`:
 
     load("@sbc_deploy//deploy:boards.bzl", "sbc_board")
@@ -14,7 +15,7 @@ import (e.g. `display-vc4`). It's a first-class Bazel target carrying
     sbc_application(name = "app", board = ":my-pi", flake = "nix", ...)
 
 Predefined boards live at
-`@sbc_deploy//deploy/boards:{raspberry-pi-5,-4,-3,-02,amd64-generic}`.
+`@sbc_deploy//deploy/boards:{raspberry-pi-5,-4,-3,-02,amd64-generic,nanopi-r6s}`.
 
 Mechanically, the rule writes a THREE-line file — board name, comma-joined module
 names, then the family — that the launcher (`launch.sh`) resolves from runfiles
@@ -28,7 +29,7 @@ SbcBoardInfo = provider(
     fields = {
         "board": "nixos-raspberrypi board module name, e.g. \"raspberry-pi-3\".",
         "modules": "Optional nixos-raspberrypi board submodules to import (list of strings), e.g. [\"display-vc4\"].",
-        "family": "Platform family selecting the system builder: \"raspberrypi\" (default) or \"x86_64\".",
+        "family": "Platform family selecting the system builder: \"raspberrypi\" (default), \"x86_64\" or \"rockchip\".",
     },
 )
 
@@ -61,7 +62,7 @@ sbc_board = rule(
     attrs = {
         "nixos_board": attr.string(
             mandatory = True,
-            doc = "nixos-raspberrypi board module name, e.g. \"raspberry-pi-3\". Selects the kernel/firmware/device-tree/bootloader. Informational (ignored) when family = \"x86_64\".",
+            doc = "nixos-raspberrypi board module name, e.g. \"raspberry-pi-3\" (for family = \"rockchip\": a board of nix/modules/rockchip.nix, e.g. \"nanopi-r6s\"). Selects the kernel/firmware/device-tree/bootloader. Informational (ignored) when family = \"x86_64\".",
         ),
         "modules": attr.string_list(
             default = [],
@@ -69,8 +70,8 @@ sbc_board = rule(
         ),
         "family": attr.string(
             default = "raspberrypi",
-            values = ["raspberrypi", "x86_64"],
-            doc = "Platform family: \"raspberrypi\" (default; a nixos-raspberrypi SD-image system) or \"x86_64\" (a stock nixpkgs amd64 system + a bootable install USB). Selects the system builder + which image targets are meaningful.",
+            values = ["raspberrypi", "x86_64", "rockchip"],
+            doc = "Platform family: \"raspberrypi\" (default; a nixos-raspberrypi SD-image system), \"x86_64\" (a stock nixpkgs amd64 system + a bootable install USB) or \"rockchip\" (a stock nixpkgs aarch64 system with mainline U-Boot + an SD image, see nix/modules/rockchip.nix). Selects the system builder + which image targets are meaningful.",
         ),
     },
 )
