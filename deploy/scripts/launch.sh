@@ -28,6 +28,7 @@ bash_rlocationpath="$1"; shift
 wifi_json_rlocationpath="$1"; shift   # "-" sentinel when no wifi config file
 zstd_rlocationpath="$1"; shift        # "-" sentinel when not needed (e.g. builder)
 pv_rlocationpath="$1"; shift          # "-" sentinel when not needed
+ssh_rlocationpath="$1"; shift         # "-" sentinel when not needed (e.g. builder)
 board_rlocationpath="$1"; shift       # "-" sentinel when not needed (e.g. builder)
 builder_rlocationpath="$1"; shift     # "-" sentinel when using --framework-subdir
 staged_flake_rlocationpath="$1"; shift # "-" sentinel unless flake_srcs was declared
@@ -150,5 +151,17 @@ while [ "${build_data_count:-0}" -gt 0 ]; do
   build_data_count=$((build_data_count - 1))
 done
 if [ -n "$build_data_manifest" ]; then export SBC_BUILD_DATA="$build_data_manifest"; fi
+
+# Vendored openssh: prepend its bin/ to PATH so the deploy script's bare `ssh`
+# (and ssh-keygen, which lives in the same dir) resolve to the nixpkgs client
+# rather than depending on a system ssh. We resolve to the physical /nix/store
+# bin dir so all of openssh's helpers are present, not just the `ssh` symlink.
+if [[ "$ssh_rlocationpath" != "-" ]]; then
+  ssh_bin="$(rlocation "$ssh_rlocationpath")" || {
+    echo >&2 "ERROR: could not resolve openssh ($ssh_rlocationpath) in runfiles"; exit 1; }
+  ssh_dir="$(dirname "$(resolve_physical "$ssh_bin")")"
+  PATH="$ssh_dir:$PATH"
+  export PATH
+fi
 
 exec "$bash_bin" "$script" "$@"

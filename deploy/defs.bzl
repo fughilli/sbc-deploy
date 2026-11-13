@@ -133,6 +133,7 @@ _BASH = Label("@nixpkgs_bash//:bash")
 _YJ = Label("@nixpkgs_yj//:yj")
 _ZSTD = Label("@nixpkgs_zstd//:zstd")
 _PV = Label("@nixpkgs_pv//:pv")
+_SSH = Label("@nixpkgs_openssh//:ssh")
 _RUNFILES = Label("@bazel_tools//tools/bash/runfiles:runfiles")
 
 # The self-contained darwin linux-builder VM flake, shipped in each deploy
@@ -307,7 +308,7 @@ def sbc_application(
 
     # The launcher resolves these runfiles paths, then execs bash on the script.
     # rlocationpath is repo-qualified, so it works from any consumer. Order:
-    # script, bash, wifi-json (or "-"), zstd, pv, board-file, builder-flake. The
+    # script, bash, wifi-json (or "-"), zstd, pv, ssh, board-file, builder-flake. The
     # board file (two lines: board name, then comma-joined modules) is read by the
     # launcher and exported as $SBC_BOARD / $SBC_BOARD_MODULES for Nix eval; the
     # builder flake is resolved to $SBC_BUILDER_FLAKE so the auto-managed macOS
@@ -318,6 +319,7 @@ def sbc_application(
         wifi_lead,
         "$(rlocationpath {})".format(_ZSTD),
         "$(rlocationpath {})".format(_PV),
+        "$(rlocationpath {})".format(_SSH),
         "$(rlocationpath {})".format(board),
         "$(rlocationpath {})".format(_BUILDER),
         staged_flake_lead,
@@ -330,7 +332,7 @@ def sbc_application(
     # _BUILDER (flake.nix) must be listed directly so its $(rlocationpath) in
     # `lead` has a declared prerequisite; _BUILDER_SRCS carries flake.lock into
     # runfiles beside it so the realised path: flake evaluates purely.
-    data = [_SCRIPT, _BASH, _ZSTD, _PV, _RUNFILES, board, _BUILDER, _BUILDER_SRCS] + wifi_data + build_data + staged_data + ([secret_tool] if secret_tool else [])
+    data = [_SCRIPT, _BASH, _ZSTD, _PV, _SSH, _RUNFILES, board, _BUILDER, _BUILDER_SRCS] + wifi_data + build_data + staged_data + ([secret_tool] if secret_tool else [])
 
     def _target(suffix, argv):
         sh_binary(
@@ -398,6 +400,7 @@ def _tool_target(name, subcommand, framework, visibility):
             "-",  # no wifi config file
             "-",  # no zstd
             "-",  # no pv
+            "-",  # no ssh (tool targets don't reach a board)
             "-",  # no board definition
             "-",  # no builder flake (this target uses --framework-subdir)
             "-",  # no staged flake source (uses --framework-subdir)

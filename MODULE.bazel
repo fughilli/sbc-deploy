@@ -115,6 +115,26 @@ filegroup(
 )
 use_repo(nix_pkg, "nixpkgs_pv")
 
+# openssh — the ssh client the deploy/ssh/seed_tailscale commands shell out to.
+# Vendored from nixpkgs (not assumed on the host PATH) so the targets work in a
+# minimal environment — e.g. a CI/dev container with no system ssh. The launcher
+# prepends this package's bin/ to PATH, so the bare `ssh` calls in sbc_deploy.sh
+# resolve to it (and ssh's helpers like ssh-keygen come along in the same dir).
+nix_pkg.attr(
+    name = "nixpkgs_openssh",
+    attr = "openssh",
+    build_file_content = """\
+package(default_visibility = ["//visibility:public"])
+
+filegroup(
+    name = "ssh",
+    srcs = ["bin/ssh"],
+)
+""",
+    repo = "@nixpkgs",
+)
+use_repo(nix_pkg, "nixpkgs_openssh")
+
 # e2fsprogs (debugfs) — read/write files inside an ext4 filesystem by device node,
 # with NO mount and NO root (uses libext2fs). Lets `sd_seed_wifi` add WiFi profiles
 # to an already-imaged card's ext4 root partition cross-platform. NB: use e2fsprogs,
